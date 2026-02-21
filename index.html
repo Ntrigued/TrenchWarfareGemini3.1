@@ -614,9 +614,10 @@
         const weaponsData = [
             { id: 'rifle', name: '1: Rifle', type: 'semi', fireRate: 250, recoilPitch: 0.0066, recoilZ: 0.033, barrelLen: -0.8, soundPitch: 1.0, alignY: -0.06 },
             { id: 'mg', name: '2: Machine Gun', type: 'auto', fireRate: 100, recoilPitch: 0.0066, recoilZ: 0.033, barrelLen: -0.9, soundPitch: 1.1, alignY: -0.08 },
-            { id: 'sniper', name: '3: Sniper Rifle', type: 'semi', fireRate: 800, recoilPitch: 0.0198, recoilZ: 0.1, barrelLen: -1.2, soundPitch: 0.7, alignY: 0 }
+            { id: 'sniper', name: '3: Sniper Rifle', type: 'semi', fireRate: 1500, recoilPitch: 0.0198, recoilZ: 0.1, barrelLen: -1.2, soundPitch: 0.7, alignY: 0 } // Sniper fireRate increased to 1.5s for bolt action
         ];
         let currentWeaponIndex = 0; let sniperZoomLevel = 4;
+        let snBoltGroup; // Expose globally for bolt animation
 
         const modelRifle = new THREE.Group();
         const rBarrel = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.015, 0.8, 8), new THREE.MeshLambertMaterial({ color: 0x222222 })); rBarrel.rotation.x = Math.PI / 2; rBarrel.position.set(0, 0, -0.4);
@@ -642,7 +643,16 @@
         const snReceiver = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.05, 0.3), new THREE.MeshLambertMaterial({ color: 0x1a1a1a })); snReceiver.position.set(0, 0, -0.15);
         const snStock = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.1, 0.5), new THREE.MeshLambertMaterial({ color: 0x4a2e15 })); snStock.position.set(0, -0.03, 0.15);
         const snScope = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.3, 12), new THREE.MeshLambertMaterial({ color: 0x111111 })); snScope.rotation.x = Math.PI / 2; snScope.position.set(0, 0.06, -0.15);
-        modelSniper.add(snBarrel, snReceiver, snStock, snScope);
+        
+        // Assemble the Bolt Action parts
+        snBoltGroup = new THREE.Group();
+        snBoltGroup.position.set(0, 0.015, -0.05); 
+        const snBoltBody = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.18, 8), new THREE.MeshLambertMaterial({ color: 0x555555 })); snBoltBody.rotation.x = Math.PI / 2; 
+        const snBoltHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.003, 0.003, 0.06), new THREE.MeshLambertMaterial({ color: 0x333333 })); snBoltHandle.rotation.z = Math.PI / 2; snBoltHandle.position.set(0.03, 0, 0.07); 
+        const snBoltKnob = new THREE.Mesh(new THREE.SphereGeometry(0.008, 8, 8), new THREE.MeshLambertMaterial({ color: 0x111111 })); snBoltKnob.position.set(0.06, 0, 0.07); 
+        snBoltGroup.add(snBoltBody, snBoltHandle, snBoltKnob);
+        
+        modelSniper.add(snBarrel, snReceiver, snStock, snScope, snBoltGroup);
 
         weaponContainer.add(modelRifle, modelMG, modelSniper); modelMG.visible = false; modelSniper.visible = false;
 
@@ -750,13 +760,14 @@
         document.addEventListener('mouseup', e => { if (e.button === 2) keys.rmb = false; if (e.button === 0) keys.lmb = false; });
         document.addEventListener('contextmenu', e => e.preventDefault());
 
-        const raycaster = new THREE.Raycaster(); let lastShotTime = 0;
+        const raycaster = new THREE.Raycaster(); 
+        const lastShotTimes = [0, 0, 0]; // Track delays independently per weapon
 
         function shootPlayer() {
             if (playerAI.dead || (currentWeaponIndex === 1 && mgOverheated)) return;
             const now = performance.now(); const wep = weaponsData[currentWeaponIndex];
-            if (now - lastShotTime < wep.fireRate) return;
-            lastShotTime = now;
+            if (now - lastShotTimes[currentWeaponIndex] < wep.fireRate) return;
+            lastShotTimes[currentWeaponIndex] = now;
             if (currentWeaponIndex === 1) { mgHeat += 8; if (mgHeat >= 100) { mgHeat = 100; mgOverheated = true; } }
 
             playSoundFile('gunshot', wep.soundPitch, wep.id === 'sniper' ? 1.5 : 1.0);
@@ -1387,109 +1398,11 @@
                 if (keys.lmb) { if (wep.type === 'auto' || lmbJustPressed) shootPlayer(); }
                 lmbJustPressed = false;
 
-                const isAiming = keys.rmb || keys.space; let targetFov = 75;
+                // Enforce bolt action sniper delay
+                const isRechambering = currentWeaponIndex === 2 && (now - lastShotTimes[2] < wep.fireRate);
+
+                const isAiming = (keys.rmb || keys.space) && !isRechambering; let targetFov = 75;
                 document.getElementById('scope-overlay').style.display = (isAiming && currentWeaponIndex === 2) ? 'flex' : 'none';
                 document.getElementById('crosshair').style.display = (isAiming || currentWeaponIndex === 2) ? 'none' : 'block';
 
                 if (isAiming) {
-                    if (currentWeaponIndex === 2) { targetFov = 75 / sniperZoomLevel; modelSniper.visible = false; } 
-                    else { targetFov = 40; weaponContainer.position.lerp(new THREE.Vector3(0, wep.alignY, -0.25), 15 * dt); }
-                } else {
-                    if (currentWeaponIndex === 2) modelSniper.visible = true;
-                    weaponContainer.position.lerp(new THREE.Vector3(0.2, -0.2, -0.4), 15 * dt);
-                }
-
-                camera.fov += (targetFov - camera.fov) * 15 * dt; camera.updateProjectionMatrix();
-                weaponContainer.position.z += (-0.4 - weaponContainer.position.z) * 10 * dt;
-
-                const targetLeanZ = keys.q ? 0.25 : (keys.e ? -0.25 : 0); 
-                const targetLeanX = keys.q ? -0.5 : (keys.e ? 0.5 : 0);
-                
-                leanObject.rotation.z += (targetLeanZ - leanObject.rotation.z) * 10 * dt; 
-                
-                if (typeof leanObject.userData.baseLocalX === 'undefined') leanObject.userData.baseLocalX = 0;
-                leanObject.userData.baseLocalX += (targetLeanX - leanObject.userData.baseLocalX) * 10 * dt;
-
-                let leanLocalVec = new THREE.Vector3(leanObject.userData.baseLocalX, 0, 0);
-                leanLocalVec.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
-                let leanPos2D = { x: playerRoot.position.x + leanLocalVec.x, z: playerRoot.position.z + leanLocalVec.z };
-                
-                resolveObstacles(leanPos2D, 0.3); 
-                
-                let resolvedLocalVec = new THREE.Vector3(leanPos2D.x - playerRoot.position.x, 0, leanPos2D.z - playerRoot.position.z);
-                resolvedLocalVec.applyAxisAngle(new THREE.Vector3(0, 1, 0), -yaw);
-                
-                leanObject.position.x = resolvedLocalVec.x;
-                leanObject.position.z = resolvedLocalVec.z; 
-
-                const targetEyeY = isCrouched ? 0.8 : 1.5; leanObject.position.y += (targetEyeY - leanObject.position.y) * 10 * dt;
-                
-                playerAI.mesh.scale.y = isCrouched ? 0.5 : 1.0; 
-                playerAI.mesh.position.y = isCrouched ? 0.45 : 0.9; 
-                playerAI.mesh.position.x = leanObject.position.x; 
-                playerAI.mesh.position.z = leanObject.position.z; 
-
-                const moveDir = new THREE.Vector3();
-                if (keys.w) moveDir.z -= 1; if (keys.s) moveDir.z += 1; if (keys.a) moveDir.x -= 1; if (keys.d) moveDir.x += 1;
-                if (moveDir.lengthSq() > 0) moveDir.normalize(); moveDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
-
-                const speed = (keys.shift && !isCrouched && !isAiming) ? 8 : (isCrouched ? 3 : 5);
-                const velocity = moveDir.multiplyScalar(speed * dt);
-
-                if (moveDir.lengthSq() > 0 && document.pointerLockElement && !isCrouched) {
-                    bobTime += dt * (keys.shift ? 12 : 8); pitchObject.position.y = Math.sin(bobTime) * 0.05;
-                } else pitchObject.position.y += (0 - pitchObject.position.y) * 10 * dt;
-
-                let nextPos = playerRoot.position.clone().add(velocity); const pr = 0.4; 
-                
-                if (nextPos.z < -36.3 + pr) nextPos.z = -36.3 + pr; if (nextPos.z > 36.3 - pr) nextPos.z = 36.3 - pr;
-                if (nextPos.x < -95 + pr) nextPos.x = -95 + pr; if (nextPos.x > 95 - pr) nextPos.x = 95 - pr;
-
-                let pPos2D = { x: nextPos.x, z: nextPos.z };
-                resolveObstacles(pPos2D, pr);
-                nextPos.x = pPos2D.x; nextPos.z = pPos2D.z;
-
-                const allLivingAI = [...allies, ...enemies].filter(a => !a.dead);
-                allLivingAI.forEach(ai => {
-                    let dx = nextPos.x - ai.mesh.position.x; let dz = nextPos.z - ai.mesh.position.z; let distSq = dx * dx + dz * dz;
-                    let minDist = 0.8; 
-                    if (distSq < minDist * minDist && distSq > 0.0001) {
-                        let dist = Math.sqrt(distSq); let overlap = minDist - dist;
-                        nextPos.x += (dx / dist) * overlap; nextPos.z += (dz / dist) * overlap;
-                    }
-                });
-
-                playerRoot.position.copy(nextPos);
-                playerRoot.position.y = getTerrainHeight(playerRoot.position.x, playerRoot.position.z);
-            }
-
-            const hurtEl = document.getElementById('hurt-overlay');
-            if (!playerAI.dead && parseFloat(hurtEl.style.opacity) > 0) hurtEl.style.opacity = Math.max(0, parseFloat(hurtEl.style.opacity) - dt);
-
-            if (fpFlashMaterial.opacity > 0) { fpFlashMaterial.opacity = Math.max(0, fpFlashMaterial.opacity - dt * 20); fpFlashLight.intensity = Math.max(0, fpFlashLight.intensity - dt * 40); }
-
-            impacts.forEach(imp => {
-                if (imp.life > 0) { imp.life -= dt; imp.mesh.scale.addScalar(dt * 10); imp.mesh.material.opacity = (imp.life / 0.2); if (imp.life <= 0) imp.mesh.visible = false; }
-            });
-
-            allies.forEach(a => a.update(dt)); enemies.forEach(e => e.update(dt));
-
-            flashes.forEach(f => { if (f.life > 0) { f.life -= dt; if (f.life <= 0) f.mesh.material.opacity = 0; } });
-
-            tracers.forEach(t => {
-                if (t.life > 0) {
-                    t.life -= dt; const moveDist = 150 * dt; t.traveled += moveDist;
-                    if (t.traveled >= t.maxDist) { t.life = 0; t.mesh.visible = false; } 
-                    else { t.mesh.position.add(t.dir.clone().multiplyScalar(moveDist)); }
-                }
-            });
-
-            renderer.render(scene, camera);
-        }
-
-        window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
-        animate();
-
-    </script>
-</body>
-</html>
