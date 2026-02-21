@@ -167,7 +167,7 @@
                 <h2>TRENCH WARFARE</h2>
                 <p>Click to start and lock pointer.</p>
                 <p>
-                    <b>WASD</b>: Move &nbsp;|&nbsp; <b>Shift</b>: Sprint &nbsp;|&nbsp; <b>Ctrl</b>: Toggle Crouch<br>
+                    <b>WASD</b>: Move &nbsp;|&nbsp; <b>Shift</b>: Sprint &nbsp;|&nbsp; <b>Z</b>: Toggle Crouch<br>
                     <b>Q / E</b>: Lean Left / Right<br>
                     <b>RMB / Space</b>: Aim Down Sights &nbsp;|&nbsp; <b>LMB</b>: Fire<br>
                     <b>1, 2, 3</b>: Switch Weapons &nbsp;|&nbsp; <b>+ / -</b>: Sniper Zoom
@@ -183,45 +183,121 @@
         scene.fog = new THREE.FogExp2(0x555555, 0.015);
         scene.background = new THREE.Color(0x555555);
 
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.01, 1000);
         const renderer = new THREE.WebGLRenderer({ antialias: false });
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
 
         // --- AUDIO SYSTEM ---
         let audioCtx;
+        const audioBuffers = {};
+
+        // Generate highly realistic audio buffers entirely in memory to bypass 
+        // iframe CORS blockers and Safari .ogg file format issues!
+        function createRealisticGunshot(ctx) {
+            const buffer = ctx.createBuffer(1, ctx.sampleRate * 0.8, ctx.sampleRate);
+            const data = buffer.getChannelData(0);
+            let lastOut = 0, lastOut2 = 0;
+            for (let i = 0; i < data.length; i++) {
+                const t = i / ctx.sampleRate;
+                
+                // Mechanical click of the firing pin
+                const click = (Math.random() * 2 - 1) * Math.max(0, 1.0 - t * 200);
+                
+                // Explosive bang
+                const noise = (Math.random() * 2 - 1) * Math.exp(-t * 25);
+                
+                // Physical thump/pressure wave
+                const thump = Math.sin(2 * Math.PI * (40 + 200 * Math.exp(-t * 60)) * t) * Math.exp(-t * 15);
+                
+                let sample = click * 0.5 + noise * 1.5 + thump * 2.0;
+                
+                // Double-pass lowpass filter to remove digital static and create a warm, realistic acoustic sound
+                lastOut = lastOut + 0.3 * (sample - lastOut);
+                lastOut2 = lastOut2 + 0.4 * (lastOut - lastOut2);
+                
+                // Echo/Tail
+                const tail = (Math.random() * 2 - 1) * Math.exp(-t * 3) * 0.15;
+                
+                // Hard clip distortion for extra grit
+                data[i] = Math.max(-1, Math.min(1, lastOut2 + tail)); 
+            }
+            return buffer;
+        }
+
+        function createRealisticExplosion(ctx) {
+            const buffer = ctx.createBuffer(1, ctx.sampleRate * 2.5, ctx.sampleRate);
+            const data = buffer.getChannelData(0);
+            let lastOut = 0;
+            for (let i = 0; i < data.length; i++) {
+                const t = i / ctx.sampleRate;
+                const noise = Math.random() * 2 - 1;
+                const attack = Math.min(1.0, t * 20);
+                const decay = Math.exp(-t * 1.5);
+                const rumble = Math.sin(2 * Math.PI * (20 + 30 * Math.random()) * t);
+                
+                let sample = (noise * 0.6 + rumble * 0.4) * attack * decay;
+                lastOut = lastOut + 0.05 * (sample - lastOut); // Heavy lowpass for distance
+                data[i] = lastOut * 3.0;
+            }
+            return buffer;
+        }
+
+        function createBulletWhiz(ctx) {
+            const buffer = ctx.createBuffer(1, ctx.sampleRate * 0.3, ctx.sampleRate);
+            const data = buffer.getChannelData(0);
+            let lastOut = 0;
+            for (let i = 0; i < data.length; i++) {
+                const t = i / ctx.sampleRate;
+                const freq = 1200 - 800 * (t / 0.3); // Pitch drops over time (doppler)
+                const tone = Math.sin(2 * Math.PI * freq * t);
+                const noise = Math.random() * 2 - 1;
+                const env = t < 0.1 ? (t / 0.1) : 1.0 - ((t - 0.1) / 0.2);
+                
+                let sample = (tone * 0.6 + noise * 0.4) * env;
+                lastOut = lastOut + 0.4 * (sample - lastOut);
+                data[i] = lastOut * 0.8;
+            }
+            return buffer;
+        }
+
         function initAudio() {
             if (!audioCtx) {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                
+                // Generate the PCM arrays right into memory
+                audioBuffers['gunshot'] = createRealisticGunshot(audioCtx);
+                audioBuffers['artillery'] = createRealisticExplosion(audioCtx);
+                audioBuffers['whiz'] = createBulletWhiz(audioCtx);
             }
             if (audioCtx.state === 'suspended') audioCtx.resume();
         }
 
-        function playShootSound(pitchShift, volume, isArtillery = false) {
-            if (!audioCtx) return;
-            const bufferSize = audioCtx.sampleRate * (isArtillery ? 1.5 : 0.4);
-            const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
-            const data = buffer.getChannelData(0);
-            for (let i = 0; i < bufferSize; i++) {
-                data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (audioCtx.sampleRate * (isArtillery ? 0.3 : 0.05)));
-            }
+        function playSoundFile(name, pitchShift = 1.0, volume = 1.0, isDistant = false) {
+            if (!audioCtx || !audioBuffers[name]) return; 
+            
             const source = audioCtx.createBufferSource();
-            source.buffer = buffer;
-            source.playbackRate.value = pitchShift;
-
-            const filter = audioCtx.createBiquadFilter();
-            filter.type = isArtillery ? 'lowpass' : 'bandpass';
-            filter.frequency.value = isArtillery ? 300 : 1500;
-            if (!isArtillery) filter.Q.value = 0.8;
+            source.buffer = audioBuffers[name];
+            
+            // Randomize pitch slightly for organic variation (no two shots sound perfectly identical)
+            source.playbackRate.value = pitchShift * (0.95 + Math.random() * 0.1);
 
             const gain = audioCtx.createGain();
             gain.gain.value = volume;
-            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + (isArtillery ? 1.5 : 0.4));
 
-            source.connect(filter);
-            filter.connect(gain);
+            if (isDistant) {
+                // Apply a lowpass filter to realistically muffle distant ambient shots/explosions
+                const filter = audioCtx.createBiquadFilter();
+                filter.type = 'lowpass';
+                filter.frequency.value = 300 + Math.random() * 500; // 300-800Hz
+                source.connect(filter);
+                filter.connect(gain);
+            } else {
+                source.connect(gain);
+            }
+
             gain.connect(audioCtx.destination);
-            source.start();
+            source.start(0);
         }
 
         function playPositionalSound(pos, type) {
@@ -229,69 +305,171 @@
             const dist = camera.position.distanceTo(pos);
             if (dist > 100) return;
             let vol = 1.0 / (1 + dist * 0.05);
-            let pitch = (type === 'player') ? 1.0 : (0.8 + Math.random() * 0.4);
-            playShootSound(pitch, vol * 0.8);
+            playSoundFile('gunshot', 0.9 + Math.random() * 0.2, vol * 0.6);
         }
 
-        function startArtillery() {
+        let lastNearMissTime = 0;
+        function playNearMissSound() {
+            if (!audioCtx) return;
+            const now = audioCtx.currentTime;
+            // Throttle to prevent deafening overlap if multiple bullets pass at once
+            if (now - lastNearMissTime < 0.2) return; 
+            lastNearMissTime = now;
+            
+            // Play the loud whiz/crack sound
+            playSoundFile('whiz', 0.9 + Math.random() * 0.2, 1.5);
+        }
+
+        function startAmbientBattle() {
+            // Heavy Artillery
             setInterval(() => {
                 if (Math.random() > 0.5) {
-                    playShootSound(0.2 + Math.random() * 0.1, 0.4 + Math.random() * 0.3, true);
+                    playSoundFile('artillery', 0.6 + Math.random() * 0.4, 0.7, true);
                 }
             }, 2500);
+
+            // Distant, ambient gunfire popping
+            setInterval(() => {
+                if (Math.random() > 0.3) { 
+                    playSoundFile('gunshot', 0.5 + Math.random() * 0.8, 0.1, true);
+                }
+            }, 150);
         }
 
-        // --- WORLD GEOMETRY ---
+        // --- WORLD GEOMETRY & TERRAIN ---
         const worldMeshes = [];
-        const allyCovers = [];
-        const enemyCovers = [];
+        
+        function getTerrainHeight(x, z) {
+            const absZ = Math.abs(z);
+            if (absZ < 17.5) return 0; // No Man's Land
+            if (absZ >= 17.5 && absZ < 22.0) return -1.2; // Front Trench
+            
+            if (absZ >= 22.0 && absZ < 26.0) {
+                // Check if in gap (with slight leniency for boundary)
+                const inGap = (Math.abs(x + 60) < 4.2) || (Math.abs(x + 20) < 4.2) || 
+                              (Math.abs(x - 20) < 4.2) || (Math.abs(x - 60) < 4.2);
+                if (inGap) {
+                    return -1.2 + (2.2 * ((absZ - 22.0) / 4.0)); // Incline/Ramp
+                } else {
+                    return 1.0; // Top of the dirt block
+                }
+            }
+            return 1.0; // Elevated Back Trench
+        }
 
         const groundMat = new THREE.MeshLambertMaterial({ color: 0x3a4530 });
         const wallMat = new THREE.MeshLambertMaterial({ color: 0x4a3c2b });
         const woodMat = new THREE.MeshLambertMaterial({ color: 0x3d2817 });
 
-        // Ground planes
-        const g1 = new THREE.Mesh(new THREE.PlaneGeometry(200, 100), groundMat);
-        g1.rotation.x = -Math.PI / 2; g1.position.set(0, 0, -72);
-        const g2 = new THREE.Mesh(new THREE.PlaneGeometry(200, 36), groundMat);
-        g2.rotation.x = -Math.PI / 2; g2.position.set(0, 0, 0);
-        const g3 = new THREE.Mesh(new THREE.PlaneGeometry(200, 100), groundMat);
-        g3.rotation.x = -Math.PI / 2; g3.position.set(0, 0, 72);
-        scene.add(g1, g2, g3);
-        worldMeshes.push(g1, g2, g3);
+        // Base Terrain Planes
+        const nml = new THREE.Mesh(new THREE.PlaneGeometry(200, 35), groundMat);
+        nml.rotation.x = -Math.PI / 2; nml.position.set(0, 0, 0);
 
-        // Trench Floors
-        const t1 = new THREE.Mesh(new THREE.PlaneGeometry(200, 4), wallMat);
-        t1.rotation.x = -Math.PI / 2; t1.position.set(0, -1.2, -20);
-        const t2 = new THREE.Mesh(new THREE.PlaneGeometry(200, 4), wallMat);
-        t2.rotation.x = -Math.PI / 2; t2.position.set(0, -1.2, 20);
-        scene.add(t1, t2);
-        worldMeshes.push(t1, t2);
+        const tfA = new THREE.Mesh(new THREE.PlaneGeometry(200, 4.25), wallMat);
+        tfA.rotation.x = -Math.PI / 2; tfA.position.set(0, -1.2, -19.875);
+        const tfE = new THREE.Mesh(new THREE.PlaneGeometry(200, 4.25), wallMat);
+        tfE.rotation.x = -Math.PI / 2; tfE.position.set(0, -1.2, 19.875);
 
-        // Trench Walls
-        function createThickWall(z) {
-            const w = new THREE.Mesh(new THREE.BoxGeometry(200, 1.2, 0.5), wallMat);
-            w.position.set(0, -0.6, z);
-            scene.add(w);
-            worldMeshes.push(w);
+        const bfA = new THREE.Mesh(new THREE.PlaneGeometry(200, 10.75), wallMat);
+        bfA.rotation.x = -Math.PI / 2; bfA.position.set(0, 1.0, -31.375);
+        const bfE = new THREE.Mesh(new THREE.PlaneGeometry(200, 10.75), wallMat);
+        bfE.rotation.x = -Math.PI / 2; bfE.position.set(0, 1.0, 31.375);
+
+        scene.add(nml, tfA, tfE, bfA, bfE);
+        worldMeshes.push(nml, tfA, tfE, bfA, bfE);
+
+        // Solid Dirt Blocks & Ramps
+        const rampGeo = new THREE.PlaneGeometry(8, 4.565);
+        const gapCenters = [-60, -20, 20, 60];
+        const blockCenters = [-82, -40, 0, 40, 82];
+        const blockWidths = [36, 32, 32, 32, 36];
+
+        for (let i = 0; i < blockCenters.length; i++) {
+            let bA = new THREE.Mesh(new THREE.BoxGeometry(blockWidths[i], 2.2, 4.0), groundMat);
+            bA.position.set(blockCenters[i], -0.1, -24.0);
+            scene.add(bA); worldMeshes.push(bA);
+            
+            let bE = new THREE.Mesh(new THREE.BoxGeometry(blockWidths[i], 2.2, 4.0), groundMat);
+            bE.position.set(blockCenters[i], -0.1, 24.0);
+            scene.add(bE); worldMeshes.push(bE);
         }
-        createThickWall(-17.75); // front ally
-        createThickWall(-22.25); // back ally
-        createThickWall(17.75);  // front enemy
-        createThickWall(22.25);  // back enemy
 
-        // Cover Points
-        function createCover(x, z, isFront, targetArray) {
-            const mesh = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.4, 1), woodMat);
-            mesh.position.set(x, -1.2 + 0.7, z + (isFront ? 0.75 : -0.75));
+        for (let i = 0; i < gapCenters.length; i++) {
+            let rA = new THREE.Mesh(rampGeo, groundMat);
+            rA.rotation.x = -Math.PI / 2 - 0.5028;
+            rA.position.set(gapCenters[i], -0.1, -24.0);
+            scene.add(rA); worldMeshes.push(rA);
+
+            let rE = new THREE.Mesh(rampGeo, groundMat);
+            rE.rotation.x = -Math.PI / 2 + 0.5028;
+            rE.position.set(gapCenters[i], -0.1, 24.0);
+            scene.add(rE); worldMeshes.push(rE);
+        }
+
+        // Fortification Walls
+        function createWall(x, z, w, h, yCenter) {
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.5), wallMat);
+            mesh.position.set(x, yCenter, z);
             scene.add(mesh);
             worldMeshes.push(mesh);
-            targetArray.push({ x: x, z: mesh.position.z });
         }
-        // Generate enough cover spots so 45 AIs don't have to share
-        for (let i = -96; i <= 96; i += 4) {
-            createCover(i + (Math.random() * 1.5 - 0.75), -18, Math.random() > 0.5, allyCovers);
-            createCover(i + (Math.random() * 1.5 - 0.75), 18, Math.random() > 0.5, enemyCovers);
+
+        // Front Parapets (Facing No Man's Land)
+        createWall(0, -17.75, 200, 1.4, -0.5); 
+        createWall(0, 17.75, 200, 1.4, -0.5);  
+
+        // Very back boundaries
+        createWall(0, -36.75, 200, 2.0, 2.0);  
+        createWall(0, 36.75, 200, 2.0, 2.0);   
+
+        // AI Cover Arrays
+        const allyCoversFront = [], allyCoversBack = [];
+        const enemyCoversFront = [], enemyCoversBack = [];
+
+        // Build the Elevated Parapets (with alternating high/low sections and gaps for ramps)
+        function buildElevatedWallAndCovers(zPos, isEnemy) {
+            for (let i = 0; i < blockCenters.length; i++) {
+                const cx = blockCenters[i];
+                const w = blockWidths[i];
+                
+                // Base low wall (Floor is y=1.0. Wall top is y=1.8)
+                createWall(cx, zPos, w, 0.8, 1.4);
+
+                let startX = cx - w/2 + 2;
+                let endX = cx + w/2 - 2;
+                let count = 0;
+                for (let x = startX; x <= endX; x += 4) {
+                    if (count % 2 === 0) {
+                        // High block/merlon (Top is y=2.8)
+                        createWall(x, zPos, 3.5, 1.8, 1.9);
+                    } else {
+                        // Low spot -> This is an excellent cover point!
+                        const targetZ = isEnemy ? zPos + 1.0 : zPos - 1.0;
+                        if (isEnemy) enemyCoversBack.push({ x: x, z: targetZ, y: 1.0 });
+                        else allyCoversBack.push({ x: x, z: targetZ, y: 1.0 });
+                    }
+                    count++;
+                }
+            }
+        }
+        // Place elevated walls at z=26.25, protecting the back trench at z=27+
+        buildElevatedWallAndCovers(-26.25, false);
+        buildElevatedWallAndCovers(26.25, true);
+
+        // Front Trench Obstacles / Covers
+        for (let x = -96; x <= 96; x += 4) {
+            // Leave gaps in front of the ramps so AI/player can walk through to the ramp easily
+            if (Math.abs(x + 60) < 5 || Math.abs(x + 20) < 5 || Math.abs(x - 20) < 5 || Math.abs(x - 60) < 5) continue;
+            
+            let meshA = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.4, 1), woodMat);
+            meshA.position.set(x + (Math.random() - 0.5), -0.5, -18.5);
+            scene.add(meshA); worldMeshes.push(meshA);
+            allyCoversFront.push({ x: meshA.position.x, z: -18.5, y: -1.2 });
+
+            let meshE = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.4, 1), woodMat);
+            meshE.position.set(x + (Math.random() - 0.5), -0.5, 18.5);
+            scene.add(meshE); worldMeshes.push(meshE);
+            enemyCoversFront.push({ x: meshE.position.x, z: 18.5, y: -1.2 });
         }
 
         // No Man's Land Obstacles
@@ -315,7 +493,7 @@
 
         // --- PLAYER & CAMERA HIERARCHY ---
         const playerRoot = new THREE.Group();
-        playerRoot.position.set(0, -1.2, -20);
+        playerRoot.position.set(0, getTerrainHeight(0, -20), -20);
         scene.add(playerRoot);
 
         const leanObject = new THREE.Group();
@@ -336,6 +514,7 @@
             mesh: new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.8, 0.8), new THREE.MeshBasicMaterial({ visible: false })),
             takeDamage: function(amt, attacker) {
                 if (this.dead) return;
+                playNearMissSound(); // Guarantee the loud crack/boom if you actually get hit
                 playerHp -= amt;
                 document.getElementById('healthbar').style.width = (playerHp * 10) + '%';
                 document.getElementById('hurt-overlay').style.opacity = 0.5;
@@ -509,7 +688,7 @@
         }
 
         // --- INPUT & CONTROLS ---
-        const keys = { w: false, a: false, s: false, d: false, shift: false, ctrl: false, q: false, e: false, space: false, lmb: false };
+        const keys = { w: false, a: false, s: false, d: false, shift: false, z: false, q: false, e: false, space: false, lmb: false };
         let lmbJustPressed = false;
         let isCrouched = false;
         let yaw = 0;
@@ -522,7 +701,7 @@
         document.getElementById('instructions').addEventListener('click', () => {
             if (!initialized) {
                 initAudio();
-                startArtillery();
+                startAmbientBattle();
                 initialized = true;
             }
             if (!document.pointerLockElement) {
@@ -554,9 +733,9 @@
             if (code === 'KeyS') keys.s = true;
             if (code === 'KeyD') keys.d = true;
             if (code === 'ShiftLeft' || code === 'ShiftRight') keys.shift = true;
-            if (code === 'ControlLeft' || code === 'ControlRight') {
-                if (!keys.ctrl) isCrouched = !isCrouched;
-                keys.ctrl = true;
+            if (code === 'KeyZ') {
+                if (!keys.z) isCrouched = !isCrouched;
+                keys.z = true;
             }
             if (code === 'KeyQ') keys.q = true;
             if (code === 'KeyE') keys.e = true;
@@ -582,7 +761,7 @@
             if (code === 'KeyS') keys.s = false;
             if (code === 'KeyD') keys.d = false;
             if (code === 'ShiftLeft' || code === 'ShiftRight') keys.shift = false;
-            if (code === 'ControlLeft' || code === 'ControlRight') keys.ctrl = false;
+            if (code === 'KeyZ') keys.z = false;
             if (code === 'KeyQ') keys.q = false;
             if (code === 'KeyE') keys.e = false;
             if (code === 'Space') keys.space = false;
@@ -603,14 +782,6 @@
         });
         document.addEventListener('contextmenu', e => e.preventDefault());
 
-        // Zoom wheel for sniper
-        document.addEventListener('wheel', e => {
-            if (currentWeaponIndex === 2 && (keys.rmb || keys.space)) {
-                sniperZoomLevel += (e.deltaY > 0 ? -1 : 1);
-                sniperZoomLevel = Math.max(2, Math.min(10, sniperZoomLevel));
-            }
-        });
-
         const raycaster = new THREE.Raycaster();
         let lastShotTime = 0;
 
@@ -628,15 +799,16 @@
 
             // Generate heat for machine gun
             if (currentWeaponIndex === 1) {
-                mgHeat += 8; // Reduced from 12 to 8
+                mgHeat += 8; 
                 if (mgHeat >= 100) {
                     mgHeat = 100;
                     mgOverheated = true;
                 }
             }
 
-            const pitchMod = wep.soundPitch + (Math.random() * 0.1 - 0.05);
-            playShootSound(pitchMod, 1.0, false);
+            // Play correct realistic audio file based on weapon type
+            const pitchMod = wep.soundPitch;
+            playSoundFile('gunshot', pitchMod, wep.id === 'sniper' ? 1.5 : 1.0);
             
             // Visuals
             const barrelPos = new THREE.Vector3(0, 0, wep.barrelLen);
@@ -645,8 +817,6 @@
             // Apply slight spread based on weapon
             const camDir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.getWorldQuaternion(new THREE.Quaternion()));
             if (wep.type === 'auto') {
-                // Reasonable random deviation/spread for the machine gun at ~40-50m distances
-                // 0.015 means a max deviation of ~0.3 units at the enemy trench, forming a tight but noticeable cone
                 camDir.x += (Math.random() - 0.5) * 0.015;
                 camDir.y += (Math.random() - 0.5) * 0.015;
                 camDir.normalize();
@@ -724,7 +894,7 @@
             document.getElementById('healthbar').style.width = '100%';
             document.getElementById('hurt-overlay').style.opacity = 0;
             document.getElementById('hurt-overlay').style.background = 'red';
-            playerRoot.position.set((Math.random() - 0.5) * 40, -1.2, -20);
+            playerRoot.position.set((Math.random() - 0.5) * 40, getTerrainHeight(0, -20), -20);
             yaw = 0; pitch = 0;
             isCrouched = false;
         }
@@ -738,6 +908,7 @@
             constructor(isEnemy) {
                 this.isEnemy = isEnemy;
                 this.mesh = new THREE.Group();
+                this.trenchLevel = Math.random() > 0.5 ? 'front' : 'back'; // Spawn location!
                 
                 const uniformMat = isEnemy ? enemyMat : allyMat;
                 const helmetMat = isEnemy ? new THREE.MeshLambertMaterial({ color: 0x3a2a2a }) : new THREE.MeshLambertMaterial({ color: 0x3a4a30 });
@@ -840,6 +1011,7 @@
 
                 this.dead = true;
                 this.timer = Math.random() * 2;
+                this.targetLockTime = 0; // Initialize lock timer
                 
                 // Animation states
                 this.crouchT = 1.0; 
@@ -850,7 +1022,10 @@
             }
 
             pickCover() {
-                const covers = this.isEnemy ? enemyCovers : allyCovers;
+                let covers = [];
+                if (this.isEnemy) covers = this.trenchLevel === 'front' ? enemyCoversFront : enemyCoversBack;
+                else covers = this.trenchLevel === 'front' ? allyCoversFront : allyCoversBack;
+
                 const peers = this.isEnemy ? enemies : allies;
                 
                 // Find covers that are NOT currently targeted by living teammates
@@ -867,11 +1042,15 @@
                 this.dead = false;
                 this.mesh.visible = true;
                 this.state = 'hidden';
-                this.timer = 0.5 + Math.random(); // Spawn and engage much faster
+                this.timer = 0.5 + Math.random(); 
                 this.target = null;
                 this.targetCover = null;
                 this.scanBaseYaw = this.isEnemy ? Math.PI : 0;
                 this.shootDelay = 0;
+                this.targetLockTime = 0; // Reset lock timer
+                
+                // Re-roll which tier of the trench they spawn in!
+                this.trenchLevel = Math.random() > 0.5 ? 'front' : 'back';
                 
                 // Animation resets
                 this.crouchT = 1.0;
@@ -879,28 +1058,27 @@
 
                 this.pickCover();
                 
-                // Keep the mesh root firmly at floor level at all times
-                this.mesh.position.set(this.targetCover.x, -1.2, this.targetCover.z + (this.isEnemy ? 1 : -1));
+                // Set explicitly to terrain height!
+                this.mesh.position.set(this.targetCover.x, getTerrainHeight(this.targetCover.x, this.targetCover.z), this.targetCover.z);
             }
 
             alert(attacker) {
                 if (this.dead || !attacker || attacker.dead) return;
                 
-                // Prioritize who shot at us heavily
-                if (!this.target || Math.random() < 0.8) {
-                    this.target = attacker;
-                    
-                    // Update base yaw so they face the shooter's general direction
-                    let targetPos = new THREE.Vector3();
-                    if (attacker.isPlayer) camera.getWorldPosition(targetPos);
-                    else targetPos = attacker.mesh.position.clone();
-                    const dx = targetPos.x - this.mesh.position.x;
-                    const dz = targetPos.z - this.mesh.position.z;
-                    this.scanBaseYaw = Math.atan2(dx, dz);
-                }
+                // IMMEDIATELY prioritize whoever just shot at us and lock on for 15s!
+                this.target = attacker;
+                this.targetLockTime = 15.0;
                 
-                // If ducked, have a high chance to pop up and look for the shooter
-                if (this.state === 'hidden' && Math.random() < 0.8) {
+                // Update base yaw so they face the shooter's general direction
+                let targetPos = new THREE.Vector3();
+                if (attacker.isPlayer) camera.getWorldPosition(targetPos);
+                else targetPos = attacker.mesh.position.clone();
+                const dx = targetPos.x - this.mesh.position.x;
+                const dz = targetPos.z - this.mesh.position.z;
+                this.scanBaseYaw = Math.atan2(dx, dz);
+                
+                // If ducked, pop up immediately. If exposed, re-aim.
+                if (this.state === 'hidden') {
                     this.state = 'popping';
                     this.timer = 0.2; // Pop up fast when under fire
                 } else if (this.state === 'aiming' || this.state === 'shooting') {
@@ -938,6 +1116,7 @@
                 }
 
                 this.timer -= dt;
+                if (this.targetLockTime > 0) this.targetLockTime -= dt;
                 
                 // Determine target animation poses based on state
                 let targetCrouch = 0.0;
@@ -948,7 +1127,7 @@
                         targetCrouch = 0.7; // crouched while moving to new cover
                         const moveSpeed = 3.5;
                         const targetX = this.targetCover.x;
-                        const targetZ = this.targetCover.z + (this.isEnemy ? 1 : -1);
+                        const targetZ = this.targetCover.z;
                         
                         const dx = targetX - this.mesh.position.x;
                         const dz = targetZ - this.mesh.position.z;
@@ -980,9 +1159,10 @@
                             this.state = 'aiming';
                             this.timer = 0.5 + Math.random() * 1.0; // Less scanning, more shooting
                             
-                            // CRITICAL FIX: Only pick a random target if we don't already have one from an alert!
-                            if (!this.target || this.target.dead || !this.checkLOS(this.target)) {
+                            // Find new target only if we have none, it died, or our 15s lock expired and we don't have LOS
+                            if (!this.target || this.target.dead || (this.targetLockTime <= 0 && !this.checkLOS(this.target))) {
                                 this.target = this.findTarget();
+                                if (this.target) this.targetLockTime = 15.0; // Lock onto the new target
                             } else {
                                 this.shootDelay = 0.1 + Math.random() * 0.2; // Faster target acquisition
                             }
@@ -991,19 +1171,38 @@
                     case 'aiming':
                         targetCrouch = 0.0;
                         targetAim = 1.0;
-                        if (this.target && !this.target.dead && this.checkLOS(this.target)) {
+                        
+                        if (this.target && !this.target.dead) {
                             this.aimAtTarget(dt);
-                            if (this.shootDelay <= 0) {
-                                this.state = 'shooting';
-                                this.shotsFired = 0;
-                                this.shotsToFire = 3 + Math.floor(Math.random() * 4); // Shoot 3 to 6 times per burst
-                                this.timer = 0.1;
+                            if (this.checkLOS(this.target)) {
+                                // Target visible, prepare to fire
+                                if (this.shootDelay <= 0) {
+                                    this.state = 'shooting';
+                                    this.shotsFired = 0;
+                                    this.shotsToFire = 3 + Math.floor(Math.random() * 4); // Shoot 3 to 6 times per burst
+                                    this.timer = 0.1;
+                                } else {
+                                    this.shootDelay -= dt;
+                                }
                             } else {
-                                this.shootDelay -= dt;
+                                // Target is hiding, but we have them locked!
+                                if (this.targetLockTime <= 0) {
+                                    // Lock expired, give up and find someone else
+                                    this.target = this.findTarget();
+                                    if (this.target) this.targetLockTime = 15.0;
+                                    this.shootDelay = 0.1 + Math.random() * 0.2;
+                                } else {
+                                    // Target still locked. Wait it out and pin them down!
+                                    if (this.timer <= 0) {
+                                        this.state = 'hidden';
+                                        this.timer = 0.5 + Math.random();
+                                    }
+                                }
                             }
                         } else {
                             // Target lost or no target -> actively scan the trench
                             this.target = this.findTarget();
+                            if (this.target) this.targetLockTime = 15.0;
                             this.shootDelay = 0.1 + Math.random() * 0.2;
                             this.mesh.rotation.y = this.scanBaseYaw + Math.sin(performance.now() * 0.002 + this.mesh.id) * 0.5;
                             
@@ -1113,18 +1312,27 @@
                     }
                 });
 
-                // Constrain Z to trench bounds so they don't get pushed into walls
-                const minZ = this.isEnemy ? 16.5 : -21.5;
-                const maxZ = this.isEnemy ? 21.5 : -16.5;
+                // Constrain Z to their specific trench bounds so they don't wander out into No Man's Land!
+                let minZ, maxZ;
+                if (this.isEnemy) {
+                    if (this.trenchLevel === 'front') { minZ = 18.2; maxZ = 21.8; }
+                    else { minZ = 26.8; maxZ = 36.2; }
+                } else {
+                    if (this.trenchLevel === 'front') { minZ = -21.8; maxZ = -18.2; }
+                    else { minZ = -36.2; maxZ = -26.8; }
+                }
                 this.mesh.position.z = Math.max(minZ, Math.min(maxZ, this.mesh.position.z));
                 
                 // If stationary, gradually pull them perfectly into their cover spot
                 if (this.state !== 'moving' && this.targetCover) {
                     const idealX = this.targetCover.x;
-                    const idealZ = this.targetCover.z + (this.isEnemy ? 1 : -1);
+                    const idealZ = this.targetCover.z;
                     this.mesh.position.x += (idealX - this.mesh.position.x) * 2 * dt;
                     this.mesh.position.z += (idealZ - this.mesh.position.z) * 2 * dt;
                 }
+
+                // Snap to correct terrain height!
+                this.mesh.position.y = getTerrainHeight(this.mesh.position.x, this.mesh.position.z);
             }
 
             findTarget() {
@@ -1190,7 +1398,7 @@
                 dir.z += (Math.random() - 0.5) * spread;
                 dir.normalize();
 
-                playPositionalSound(visualStart, 'ai');
+                // Play the muzzle flash, but omit the individual gunshot noise
                 showMuzzleFlash(visualStart, dir);
 
                 raycaster.set(eyeStart, dir);
@@ -1232,8 +1440,14 @@
                         const pos = t.isPlayer ? playerRoot.position.clone() : t.mesh.position.clone();
                         pos.y += posOffset;
 
-                        if (bulletRay.distanceSqToPoint(pos) < 16.0) { // within 4 meters
-                            if (!t.isPlayer) t.alert(this);
+                        const distSq = bulletRay.distanceSqToPoint(pos);
+                        if (distSq < 16.0) { // within 4 meters for AI suppression logic
+                            if (!t.isPlayer) {
+                                t.alert(this);
+                            } else if (distSq < 0.25) {
+                                // Trigger noticeable sound ONLY if a bullet whizzes VERY near the player (within 0.5 meters)
+                                playNearMissSound();
+                            }
                         }
                     }
                 });
@@ -1379,34 +1593,70 @@
                     pitchObject.position.y += (0 - pitchObject.position.y) * 10 * dt;
                 }
 
-                // Collision
-                const nextPos = playerRoot.position.clone().add(velocity);
-                if (nextPos.x < -95) nextPos.x = -95;
-                if (nextPos.x > 95) nextPos.x = 95;
-                if (nextPos.z < -21.5) nextPos.z = -21.5;
-                if (nextPos.z > -18.5) nextPos.z = -18.5;
+                // Player Collision Checks with Wall Buffers
+                let nextPos = playerRoot.position.clone().add(velocity);
+                const pr = 0.4; // Solid Player radius
+                
+                // Restrict movement into No Man's Land completely
+                if (playerRoot.position.z < 0 && nextPos.z > -18.0 - pr) nextPos.z = -18.0 - pr;
+                if (playerRoot.position.z > 0 && nextPos.z < 18.0 + pr) nextPos.z = 18.0 + pr;
 
-                const playerRad = 0.4;
-                allyCovers.forEach(c => {
-                    const minX = c.x - 0.75 - playerRad;
-                    const maxX = c.x + 0.75 + playerRad;
-                    const minZ = c.z - 0.5 - playerRad;
-                    const maxZ = c.z + 0.5 + playerRad;
+                // Deep Z Bounds (Back wall)
+                if (nextPos.z < -36.3 + pr) nextPos.z = -36.3 + pr;
+                if (nextPos.z > 36.3 - pr) nextPos.z = 36.3 - pr;
 
-                    if (nextPos.x > minX && nextPos.x < maxX && nextPos.z > minZ && nextPos.z < maxZ) {
-                        const dx1 = nextPos.x - minX;
-                        const dx2 = maxX - nextPos.x;
-                        const dz1 = nextPos.z - minZ;
-                        const dz2 = maxZ - nextPos.z;
-                        const min = Math.min(dx1, dx2, dz1, dz2);
-                        if (min === dx1) nextPos.x = minX;
-                        else if (min === dx2) nextPos.x = maxX;
-                        else if (min === dz1) nextPos.z = minZ;
-                        else if (min === dz2) nextPos.z = maxZ;
+                // X Bounds
+                if (nextPos.x < -95 + pr) nextPos.x = -95 + pr;
+                if (nextPos.x > 95 - pr) nextPos.x = 95 - pr;
+
+                // Elevated Wall Collision Check
+                const checkWallCollision = (zWall) => {
+                    const wallMinZ = zWall - 0.25 - pr;
+                    const wallMaxZ = zWall + 0.25 + pr;
+                    if (nextPos.z > wallMinZ && nextPos.z < wallMaxZ) {
+                        const inGap = (Math.abs(nextPos.x + 60) < 4 - pr) || (Math.abs(nextPos.x + 20) < 4 - pr) || 
+                                      (Math.abs(nextPos.x - 20) < 4 - pr) || (Math.abs(nextPos.x - 60) < 4 - pr);
+                        if (!inGap) {
+                            if (playerRoot.position.z >= zWall + 0.25) nextPos.z = wallMaxZ;
+                            else if (playerRoot.position.z <= zWall - 0.25) nextPos.z = wallMinZ;
+                        }
                     }
-                });
+                };
+                checkWallCollision(-26.25);
+                checkWallCollision(26.25);
 
+                // Solid Dirt Block Collision (prevents walking into the mud under the back trench)
+                const checkDirtCollision = (zStart, zEnd) => {
+                    const minZ = zStart - pr;
+                    const maxZ = zEnd + pr;
+                    if (nextPos.z > minZ && nextPos.z < maxZ) {
+                        const inGap = (Math.abs(nextPos.x + 60) < 4 - pr) || (Math.abs(nextPos.x + 20) < 4 - pr) || 
+                                      (Math.abs(nextPos.x - 20) < 4 - pr) || (Math.abs(nextPos.x - 60) < 4 - pr);
+                        if (!inGap) {
+                            const zDistFront = Math.abs(nextPos.z - minZ);
+                            const zDistBack = Math.abs(nextPos.z - maxZ);
+                            
+                            const gaps = [-60, -20, 20, 60];
+                            let minXDist = 999; let nearestGap = 0;
+                            gaps.forEach(g => {
+                                const dist = Math.abs(nextPos.x - g);
+                                if (dist < minXDist) { minXDist = dist; nearestGap = g; }
+                            });
+                            const xDistToOpening = Math.abs(minXDist - (4 - pr));
+                            
+                            const min = Math.min(zDistFront, zDistBack, xDistToOpening);
+                            if (min === zDistFront) nextPos.z = minZ;
+                            else if (min === zDistBack) nextPos.z = maxZ;
+                            else nextPos.x = nextPos.x > nearestGap ? nearestGap + (4 - pr) : nearestGap - (4 - pr);
+                        }
+                    }
+                };
+                checkDirtCollision(-26.0, -22.0); // Ally dirt block
+                checkDirtCollision(22.0, 26.0);   // Enemy dirt block
+
+                // Actually move player & track terrain slope seamlessly!
                 playerRoot.position.copy(nextPos);
+                playerRoot.position.y = getTerrainHeight(playerRoot.position.x, playerRoot.position.z);
             }
 
             // Hurt overlay fade
