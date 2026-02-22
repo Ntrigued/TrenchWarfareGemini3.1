@@ -250,7 +250,14 @@
 
         // --- AUDIO SYSTEM ---
         let audioCtx;
+        let masterFilter;
+        let masterGain;
+        let shellShockTimer = 0;
         const audioBuffers = {};
+
+        function triggerShellShock(duration) {
+            shellShockTimer = Math.max(shellShockTimer, duration);
+        }
 
         function createRealisticGunshot(ctx) {
             const buffer = ctx.createBuffer(1, ctx.sampleRate * 1.0, ctx.sampleRate);
@@ -309,6 +316,18 @@
         function initAudio() {
             if (!audioCtx) {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                
+                // Master audio routing for Shell Shock
+                masterFilter = audioCtx.createBiquadFilter();
+                masterFilter.type = 'lowpass';
+                masterFilter.frequency.value = 22000;
+                
+                masterGain = audioCtx.createGain();
+                masterGain.gain.value = 1.0;
+                
+                masterFilter.connect(masterGain);
+                masterGain.connect(audioCtx.destination);
+
                 audioBuffers['gunshot'] = createRealisticGunshot(audioCtx);
                 audioBuffers['artillery'] = createRealisticExplosion(audioCtx);
                 audioBuffers['whiz'] = createBulletWhiz(audioCtx);
@@ -332,33 +351,58 @@
             } else {
                 source.connect(gain);
             }
-            gain.connect(audioCtx.destination);
+            gain.connect(masterFilter); // Route into Shell Shock effects
             source.start(0);
         }
 
-        function playPositionalSound(pos, type) {
+        function playPositionalSound(pos, type = 'gunshot') {
             if (!audioCtx) return;
-            const dist = camera.position.distanceTo(pos);
-            if (dist > 100) return;
-            let vol = 1.0 / (1 + dist * 0.05);
-            playSoundFile('gunshot', 0.9 + Math.random() * 0.2, vol * 0.6);
+            const camPos = camera.getWorldPosition(new THREE.Vector3());
+            const dist = camPos.distanceTo(pos);
+            
+            // STRICT PROXIMITY CHECK: Only play localized real sounds within 25 meters
+            if (dist > 25) return; 
+            
+            // Exponential drop-off for realistic sound attenuation
+            let vol = Math.exp(-dist * 0.12);
+            
+            if (type === 'impact') {
+                // High pitch snap/thud for nearby bullet impacts
+                playSoundFile('gunshot', 1.5 + Math.random() * 0.5, vol * 0.3); 
+            } else {
+                // Standard local muzzle gunshot
+                playSoundFile('gunshot', 0.9 + Math.random() * 0.2, vol * 0.7);
+            }
         }
 
         let lastNearMissTime = 0;
         function playNearMissSound() {
             if (!audioCtx) return;
             const now = audioCtx.currentTime;
-            if (now - lastNearMissTime < 0.2) return; 
+            if (now - lastNearMissTime < 0.3) return; // Slightly throttle how often it can play
             lastNearMissTime = now;
-            playSoundFile('whiz', 0.9 + Math.random() * 0.2, 1.5);
+            playSoundFile('whiz', 0.9 + Math.random() * 0.2, 0.8);
         }
 
         function startAmbientBattle() {
             setInterval(() => {
-                if (Math.random() > 0.5) playSoundFile('artillery', 0.6 + Math.random() * 0.4, 0.7, true);
+                if (Math.random() > 0.5) {
+                    const isCloseHit = Math.random() < 0.15;
+                    playSoundFile('artillery', 0.6 + Math.random() * 0.4, isCloseHit ? 1.5 : 0.7, !isCloseHit);
+                    
+                    // Flash horizon lights
+                    let hl = horizonLights[Math.floor(Math.random() * horizonLights.length)];
+                    hl.light.intensity = 5.0 + Math.random() * 15.0;
+                    hl.timer = 0.2 + Math.random() * 0.4;
+
+                    if (isCloseHit) triggerShellShock(2.5);
+                }
             }, 2500);
+
+            // Frequent but heavily muted ambient gunshots
             setInterval(() => {
-                if (Math.random() > 0.3) playSoundFile('gunshot', 0.5 + Math.random() * 0.8, 0.1, true);
+                // Increased volume to 0.15 and significantly lowered pitch for a deeper, bassier rumble
+                if (Math.random() > 0.3) playSoundFile('gunshot', 0.25 + Math.random() * 0.2, 0.15, true);
             }, 150);
         }
 
@@ -545,6 +589,28 @@
             worldMeshes.push(mesh);
         }
 
+        // --- ATMOSPHERIC VISUALS ---
+        const ashGeo = new THREE.BufferGeometry();
+        const ashCount = 1000;
+        const ashPos = new Float32Array(ashCount * 3);
+        for(let i = 0; i < ashCount * 3; i += 3) {
+            ashPos[i] = (Math.random() - 0.5) * 200;
+            ashPos[i+1] = Math.random() * 10;
+            ashPos[i+2] = (Math.random() - 0.5) * 100;
+        }
+        ashGeo.setAttribute('position', new THREE.BufferAttribute(ashPos, 3));
+        const ashMat = new THREE.PointsMaterial({ color: 0x666666, size: 0.15, transparent: true, opacity: 0.5 });
+        const ashParticles = new THREE.Points(ashGeo, ashMat);
+        scene.add(ashParticles);
+
+        const horizonLights = [];
+        for(let i = 0; i < 6; i++) {
+            let l = new THREE.PointLight(0xffaa55, 0, 150);
+            l.position.set((Math.random() - 0.5) * 180, 5, (i % 2 === 0 ? 1 : -1) * (40 + Math.random() * 20));
+            scene.add(l);
+            horizonLights.push({light: l, timer: 0});
+        }
+
         function resolveObstacles(pos, radius) {
             for (let obs of collisionObstacles) {
                 let closestX = Math.max(obs.minX, Math.min(pos.x, obs.maxX));
@@ -590,10 +656,10 @@
 
         const playerAI = {
             isPlayer: true, hp: 10, dead: false,
-            mesh: new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.8, 0.8), new THREE.MeshBasicMaterial({ visible: false })),
             takeDamage: function(amt, attacker) {
                 if (this.dead) return;
                 playNearMissSound(); 
+                triggerShellShock(1.0); // Muffle hearing when hit
                 playerHp -= amt;
                 document.getElementById('healthbar').style.width = (playerHp * 10) + '%';
                 document.getElementById('hurt-overlay').style.opacity = 0.5;
@@ -607,6 +673,7 @@
                 }
             }
         };
+        playerAI.mesh = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.8, 0.8), new THREE.MeshBasicMaterial({ visible: false }));
         playerAI.mesh.userData.ai = playerAI; playerAI.mesh.position.y = 0.9; playerRoot.add(playerAI.mesh);
 
         // --- WEAPON SYSTEM ---
@@ -618,6 +685,8 @@
         ];
         let currentWeaponIndex = 0; let sniperZoomLevel = 4;
         let snBoltGroup; // Expose globally for bolt animation
+        let sniperNeedsRechamber = false; // Track uncompleted bolting
+        let sniperRechamberStartTime = 0;
 
         const modelRifle = new THREE.Group();
         const rBarrel = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.015, 0.8, 8), new THREE.MeshLambertMaterial({ color: 0x222222 })); rBarrel.rotation.x = Math.PI / 2; rBarrel.position.set(0, 0, -0.4);
@@ -635,8 +704,16 @@
         const mgMag = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.12, 0.1), new THREE.MeshLambertMaterial({ color: 0x2a3a2a })); mgMag.position.set(-0.04, -0.05, -0.1);
         const mgStock = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.1, 0.3), new THREE.MeshLambertMaterial({ color: 0x3a2e15 })); mgStock.position.set(0, -0.02, 0.15);
         const mgBipod = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.15), new THREE.MeshLambertMaterial({color: 0x111111})); mgBipod.position.set(0, -0.05, -0.8); mgBipod.rotation.x = Math.PI/4;
-        const mgFSight = new THREE.Mesh(new THREE.BoxGeometry(0.005, 0.04, 0.01), new THREE.MeshLambertMaterial({ color: 0x111111 })); mgFSight.position.set(0, 0.06, -0.85); 
-        modelMG.add(mgBarrel, mgReceiver, mgMag, mgStock, mgBipod, mgFSight);
+        
+        // FIX: Connect front sight downward into the barrel by increasing height to 0.07 and dropping Y to 0.045
+        const mgFSight = new THREE.Mesh(new THREE.BoxGeometry(0.005, 0.07, 0.01), new THREE.MeshLambertMaterial({ color: 0x111111 })); mgFSight.position.set(0, 0.045, -0.85); 
+        
+        // FIX: Add rear sights to create a proper viewing notch that aligns with the exact target
+        const mgRSightBase = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.02, 0.02), new THREE.MeshLambertMaterial({ color: 0x111111 })); mgRSightBase.position.set(0, 0.06, -0.05);
+        const mgRSightL = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.02, 0.02), new THREE.MeshLambertMaterial({ color: 0x111111 })); mgRSightL.position.set(-0.02, 0.08, -0.05);
+        const mgRSightR = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.02, 0.02), new THREE.MeshLambertMaterial({ color: 0x111111 })); mgRSightR.position.set(0.02, 0.08, -0.05);
+        
+        modelMG.add(mgBarrel, mgReceiver, mgMag, mgStock, mgBipod, mgFSight, mgRSightBase, mgRSightL, mgRSightR);
 
         const modelSniper = new THREE.Group();
         const snBarrel = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.015, 1.2, 8), new THREE.MeshLambertMaterial({ color: 0x222222 })); snBarrel.rotation.x = Math.PI / 2; snBarrel.position.set(0, 0, -0.6);
@@ -657,10 +734,16 @@
         weaponContainer.add(modelRifle, modelMG, modelSniper); modelMG.visible = false; modelSniper.visible = false;
 
         function switchWeapon(index) {
+            if (index === currentWeaponIndex) return;
             currentWeaponIndex = index;
             modelRifle.visible = (index === 0); modelMG.visible = (index === 1); modelSniper.visible = (index === 2);
             document.getElementById('weapon-indicator').innerText = weaponsData[index].name;
             fpFlashGroup.position.z = weaponsData[index].barrelLen - 0.05; fpFlashLight.position.z = weaponsData[index].barrelLen - 0.05;
+            
+            // Restart the rechambering process if switching to the sniper and it still needs it!
+            if (index === 2 && sniperNeedsRechamber) {
+                sniperRechamberStartTime = performance.now();
+            }
         }
 
         const fpFlashMaterial = new THREE.MeshBasicMaterial({ color: 0xffddaa, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
@@ -715,6 +798,8 @@
             
             playerKills = 0;
             document.getElementById('kill-count-indicator').innerText = 'Kills: 0';
+            sniperNeedsRechamber = false; // Reset bolt state on new game
+            sniperZoomLevel = 4; // Reset zoom to default 4x
             
             const totalCount = parseInt(document.getElementById('soldier-count').value, 10) || 100;
             const activeCount = parseInt(document.getElementById('active-count').value, 10) || 45;
@@ -766,9 +851,20 @@
         function shootPlayer() {
             if (playerAI.dead || (currentWeaponIndex === 1 && mgOverheated)) return;
             const now = performance.now(); const wep = weaponsData[currentWeaponIndex];
-            if (now - lastShotTimes[currentWeaponIndex] < wep.fireRate) return;
+            
+            if (currentWeaponIndex === 2) {
+                if (sniperNeedsRechamber) return; // Cannot shoot if the bolt needs to be pulled
+            } else {
+                if (now - lastShotTimes[currentWeaponIndex] < wep.fireRate) return;
+            }
+            
             lastShotTimes[currentWeaponIndex] = now;
             if (currentWeaponIndex === 1) { mgHeat += 8; if (mgHeat >= 100) { mgHeat = 100; mgOverheated = true; } }
+            
+            if (currentWeaponIndex === 2) {
+                sniperNeedsRechamber = true;
+                sniperRechamberStartTime = now;
+            }
 
             playSoundFile('gunshot', wep.soundPitch, wep.id === 'sniper' ? 1.5 : 1.0);
             
@@ -781,25 +877,56 @@
             raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
             if (wep.type === 'auto') raycaster.set(camera.getWorldPosition(new THREE.Vector3()), camDir);
             
-            const intersects = raycaster.intersectObjects([...worldMeshes, ...enemies.map(e => e.mesh)], true);
+            // Allow intersecting with ANY AI on the field
+            const allAIMeshes = [...enemies.map(e => e.mesh), ...allies.map(a => a.mesh)];
+            const intersects = raycaster.intersectObjects([...worldMeshes, ...allAIMeshes], true);
+            
             let hitDistance = 200;
             if (intersects.length > 0) {
                 const hit = intersects[0]; hitDistance = hit.distance; const hitObj = hit.object;
-                if (hitObj.userData.ai && hitObj.userData.ai.isEnemy) {
+                
+                // If it hits an AI (friend or foe)
+                if (hitObj.userData.ai) {
                     const isHead = hitObj.name === "head";
                     hitObj.userData.ai.takeDamage(isHead ? 99 : (1 * (currentWeaponIndex === 2 ? 5 : 1)), playerAI);
                     const marker = document.getElementById('hit-marker'); marker.style.opacity = 1; marker.style.borderColor = isHead ? 'red' : 'white';
                     setTimeout(() => marker.style.opacity = 0, 100);
+                    playPositionalSound(hit.point, 'impact');
                 } else {
                     let normal = new THREE.Vector3(0, 1, 0);
                     if (hit.face) normal.copy(hit.face.normal).applyMatrix3(new THREE.Matrix3().getNormalMatrix(hitObj.matrixWorld)).normalize();
                     createImpact(hit.point, normal);
+                    playPositionalSound(hit.point, 'impact');
+                    
+                    // Tracer Ricochet
+                    if (Math.random() < 0.3) {
+                        let reflection = camDir.clone().sub(normal.clone().multiplyScalar(2 * camDir.dot(normal))).normalize();
+                        reflection.x += (Math.random() - 0.5) * 0.3; reflection.y += Math.random() * 0.4; reflection.z += (Math.random() - 0.5) * 0.3; reflection.normalize();
+                        createTracer(hit.point, reflection, 60);
+                        
+                        // ONLY hear ricochets near the camera
+                        if (camera.getWorldPosition(new THREE.Vector3()).distanceToSquared(hit.point) < 64.0) {
+                            playSoundFile('whiz', 1.5 + Math.random() * 0.5, 0.2); 
+                        }
+                    }
                 }
             }
 
             if (Math.random() < 0.25) createTracer(barrelPos, camDir, hitDistance);
             const bulletRay = new THREE.Ray(barrelPos, camDir);
-            enemies.forEach(e => { if (!e.dead && bulletRay.distanceSqToPoint(e.mesh.position.clone().add(new THREE.Vector3(0, 1.0, 0))) < 16.0) e.alert(playerAI); });
+            let closestPt = new THREE.Vector3();
+            
+            // Whiz / Suppression check against EVERYONE
+            [...enemies, ...allies].forEach(e => { 
+                if (!e.dead) {
+                    const ePos = e.mesh.position.clone().add(new THREE.Vector3(0, 1.0, 0));
+                    bulletRay.closestPointToPoint(ePos, closestPt);
+                    // Ensure the bullet hasn't hit a wall BEFORE passing the entity
+                    if (barrelPos.distanceTo(closestPt) < hitDistance + 1.0) {
+                        if (closestPt.distanceToSquared(ePos) < 16.0) e.alert(playerAI);
+                    }
+                }
+            });
 
             pitch += wep.recoilPitch; pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch)); pitchObject.rotation.x = pitch;
             weaponContainer.position.z += wep.recoilZ;
@@ -902,6 +1029,8 @@
             respawn() {
                 this.hp = Math.floor(Math.random() * 2) + 1; 
                 this.dead = false; this.mesh.visible = true; this.state = 'hidden';
+                this.mesh.rotation.x = 0; // Ensure they are standing upright again after a death animation
+                this.deathAnimT = 0;
                 this.timer = 0.5 + Math.random(); this.target = null; this.targetCover = null; this.scanBaseYaw = this.isEnemy ? Math.PI : 0;
                 this.shootDelay = 0; this.trenchLevel = Math.random() > 0.5 ? 'front' : 'back'; this.crouchT = 1.0; this.aimT = 0.0;
                 
@@ -928,9 +1057,14 @@
                 if (this.dead || !attacker || attacker.dead) return;
                 
                 if (!this.target || Math.random() < 0.8) {
-                    this.target = attacker;
-                    let targetPos = attacker.isPlayer ? camera.getWorldPosition(new THREE.Vector3()) : attacker.mesh.position.clone();
-                    this.scanBaseYaw = Math.atan2(targetPos.x - this.mesh.position.x, targetPos.z - this.mesh.position.z);
+                    // Don't target teammates from accidental crossfire
+                    const isFriendlyFire = !attacker.isPlayer && (attacker.isEnemy === this.isEnemy);
+                    
+                    if (!isFriendlyFire) {
+                        this.target = attacker;
+                        let targetPos = attacker.isPlayer ? camera.getWorldPosition(new THREE.Vector3()) : attacker.mesh.position.clone();
+                        this.scanBaseYaw = Math.atan2(targetPos.x - this.mesh.position.x, targetPos.z - this.mesh.position.z);
+                    }
                 }
                 
                 if (this.state === 'moving') {
@@ -953,23 +1087,66 @@
                 this.hp -= amount;
                 
                 if (this.hp <= 0) {
+                    this.dead = true;
+                    this.deathAnimT = 0.0;
+                    this.corpseDelay = 2.0; // Wait 2s on ground before fading
+                    this.timer = 3 + Math.random() * 2; // Respawn delay AFTER corpse vanishes
+                    
                     if (attacker === playerAI && this.isEnemy) {
                         playerKills++;
                         document.getElementById('kill-count-indicator').innerText = `Kills: ${playerKills}`;
                     }
                 } else if (attacker && !attacker.dead) {
-                    this.alert(attacker);
+                    // Prevent AI from mutiny-ing against each other due to accidental crossfire, but punish rogue players
+                    if (attacker.isPlayer || attacker.isEnemy !== this.isEnemy) {
+                        this.alert(attacker);
+                    }
                     if (this.state === 'aiming' || this.state === 'popping') this.timer += 0.2;
                 }
             }
 
             update(dt) {
-                if (this.hp <= 0) {
-                    if (!this.dead) { 
-                        this.dead = true; 
-                        this.mesh.visible = false; 
-                        this.timer = 3 + Math.random() * 2; 
-                    } else {
+                if (this.dead) {
+                    // 1. Process death animation
+                    if (this.deathAnimT < 1.0) {
+                        this.deathAnimT += dt * 3.0; // Fall backward over ~0.33 seconds
+                        if (this.deathAnimT > 1.0) this.deathAnimT = 1.0;
+                        
+                        // Pivot backward from the feet
+                        this.mesh.rotation.x = this.deathAnimT * (-Math.PI / 2 + 0.1); 
+                        // Sink body downward slightly to simulate lying flat and not pivoting stiffly
+                        this.bodyRoot.position.y = 0.85 - (this.crouchT * 0.45) - (this.deathAnimT * 0.6); 
+                        
+                        // Animate limbs going limp and dropping weapon
+                        this.rightArm.rotation.x += (0.1 - this.rightArm.rotation.x) * 10 * dt;
+                        this.leftArm.rotation.x += (0.1 - this.leftArm.rotation.x) * 10 * dt;
+                        this.rightArm.rotation.z += (0.2 - this.rightArm.rotation.z) * 10 * dt;
+                        this.leftArm.rotation.z += (-0.2 - this.leftArm.rotation.z) * 10 * dt;
+                        this.leftArm.rotation.y += (0 - this.leftArm.rotation.y) * 10 * dt;
+                        
+                        // Straighten legs out
+                        this.leftLeg.rotation.x += (0 - this.leftLeg.rotation.x) * 10 * dt;
+                        this.rightLeg.rotation.x += (0 - this.rightLeg.rotation.x) * 10 * dt;
+                        this.leftCalf.rotation.x += (0 - this.leftCalf.rotation.x) * 10 * dt;
+                        this.rightCalf.rotation.x += (0 - this.rightCalf.rotation.x) * 10 * dt;
+                        
+                        // Straighten torso out
+                        this.crouchT += (0 - this.crouchT) * 5 * dt;
+                        this.torso.rotation.x = this.crouchT * 0.4;
+                        this.headGroup.rotation.x = -this.torso.rotation.x;
+                        
+                        this.mesh.position.y = getTerrainHeight(this.mesh.position.x, this.mesh.position.z);
+                    } 
+                    // 2. Wait for the corpse to remain on the battlefield
+                    else if (this.corpseDelay > 0) {
+                        this.corpseDelay -= dt;
+                    } 
+                    // 3. Remove corpse and enter respawn queue
+                    else {
+                        if (this.mesh.visible) {
+                            this.mesh.visible = false;
+                        }
+                        
                         this.timer -= dt;
                         if (this.timer <= 0) {
                             if (gameMode === 'endless') {
@@ -1315,33 +1492,66 @@
                 const spread = 0.05 + (dist * 0.002); dir.x += (Math.random() - 0.5) * spread; dir.y += (Math.random() - 0.5) * spread; dir.z += (Math.random() - 0.5) * spread; dir.normalize();
 
                 showMuzzleFlash(visualStart, dir); raycaster.set(eyeStart, dir);
-                const hitTargets = this.isEnemy ? [playerAI.mesh, ...allies.map(a => a.mesh)] : enemies.map(e => e.mesh);
+                
+                // Play local gunshot sound if the AI is close enough
+                playPositionalSound(visualStart, 'gunshot'); 
+
+                // Target everyone
+                const hitTargets = [playerAI.mesh, ...allies.map(a => a.mesh), ...enemies.map(e => e.mesh)];
                 const intersects = raycaster.intersectObjects([...worldMeshes, ...hitTargets], true);
 
                 let hitDistance = 200;
                 if (intersects.length > 0) {
                     const hit = intersects[0]; hitDistance = hit.distance;
+                    playPositionalSound(hit.point, 'impact'); // Local impact snap if it lands near the player
+                    
                     if (hit.object.userData.ai) {
-                        const hitObj = hit.object.userData.ai;
-                        if (hitObj.isPlayer) hitObj.takeDamage(1, this);
-                        else if (hitObj.isEnemy !== this.isEnemy) hitObj.takeDamage(hit.object.name === "head" ? 99 : 1, this);
+                        const hitAI = hit.object.userData.ai;
+                        if (hitAI.isPlayer) hitAI.takeDamage(1, this);
+                        else hitAI.takeDamage(hit.object.name === "head" ? 99 : 1, this);
                     } else {
                         let normal = new THREE.Vector3(0, 1, 0);
                         if (hit.face) { normal.copy(hit.face.normal).applyMatrix3(new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld)).normalize(); }
                         createImpact(hit.point, normal);
+                        
+                        // Tracer Ricochet
+                        if (Math.random() < 0.3) {
+                            let reflection = dir.clone().sub(normal.clone().multiplyScalar(2 * dir.dot(normal))).normalize();
+                            reflection.x += (Math.random() - 0.5) * 0.3; reflection.y += Math.random() * 0.4; reflection.z += (Math.random() - 0.5) * 0.3; reflection.normalize();
+                            createTracer(hit.point, reflection, 60);
+                            
+                            // ONLY hear ricochets near the camera
+                            if (camera.getWorldPosition(new THREE.Vector3()).distanceToSquared(hit.point) < 64.0) {
+                                playSoundFile('whiz', 1.5 + Math.random() * 0.5, 0.2); 
+                            }
+                        }
                     }
                 }
 
                 if (Math.random() < 0.25) createTracer(visualStart, dir, hitDistance);
 
                 const bulletRay = new THREE.Ray(eyeStart, dir);
-                const hitPool = this.isEnemy ? [...allies, playerAI] : enemies;
+                // Check for close calls against everyone
+                const hitPool = [...allies, ...enemies, playerAI];
+                let closestPt = new THREE.Vector3();
                 hitPool.forEach(t => {
                     if (!t.dead) {
                         const posOffset = t.isPlayer ? (isCrouched ? 0.4 : 1.0) : (1.0 - (t.crouchT * 0.45));
                         const pos = t.isPlayer ? playerRoot.position.clone() : t.mesh.position.clone(); pos.y += posOffset;
-                        const distSq = bulletRay.distanceSqToPoint(pos);
-                        if (distSq < 16.0) { if (!t.isPlayer) t.alert(this); else if (distSq < 0.25) playNearMissSound(); }
+                        
+                        bulletRay.closestPointToPoint(pos, closestPt);
+                        const distAlongRay = eyeStart.distanceTo(closestPt);
+                        
+                        // Ensure the bullet hasn't hit a wall BEFORE passing the target
+                        if (distAlongRay < hitDistance + 1.0) {
+                            const distSq = closestPt.distanceToSquared(pos);
+                            if (!t.isPlayer) {
+                                if (distSq < 16.0) t.alert(this); 
+                            } else {
+                                // Play the bullet whiz sound if it passes closely
+                                if (distSq < 2.0) playNearMissSound(); 
+                            }
+                        }
                     }
                 });
             }
@@ -1360,6 +1570,7 @@
         // --- GAME LOOP ---
         let lastTime = performance.now();
         let bobTime = 0;
+        let breathTime = 0;
 
         function animate() {
             requestAnimationFrame(animate);
@@ -1368,6 +1579,8 @@
             let dt = (now - lastTime) / 1000;
             lastTime = now;
             if (dt > 0.1) dt = 0.1;
+            
+            breathTime += dt * 1.5; // Idle breathing timer
 
             if (!playerAI.dead && document.pointerLockElement) {
                 if (gameMode === 'elimination') {
@@ -1398,11 +1611,232 @@
                 if (keys.lmb) { if (wep.type === 'auto' || lmbJustPressed) shootPlayer(); }
                 lmbJustPressed = false;
 
-                // Enforce bolt action sniper delay
-                const isRechambering = currentWeaponIndex === 2 && (now - lastShotTimes[2] < wep.fireRate);
+                // Enforce bolt action sniper delay independently
+                const preBoltDelay = 250; // 0.25 seconds delay before pulling the bolt
+                let isRechambering = false;
+                let isActivelyBolting = false;
+                let boltProgress = 0;
 
-                const isAiming = (keys.rmb || keys.space) && !isRechambering; let targetFov = 75;
+                if (currentWeaponIndex === 2 && sniperNeedsRechamber) {
+                    isRechambering = true;
+                    const timeSinceBoltStart = now - sniperRechamberStartTime;
+                    
+                    if (timeSinceBoltStart >= wep.fireRate) {
+                        sniperNeedsRechamber = false; // Finished rechambering!
+                        isRechambering = false;
+                    } else if (timeSinceBoltStart >= preBoltDelay) {
+                        isActivelyBolting = true;
+                        boltProgress = (timeSinceBoltStart - preBoltDelay) / (wep.fireRate - preBoltDelay);
+                    }
+                }
+
+                // Wait to pull out of scope until the bolt animation actually begins
+                const isAiming = (keys.rmb || keys.space) && !isActivelyBolting; let targetFov = 75;
                 document.getElementById('scope-overlay').style.display = (isAiming && currentWeaponIndex === 2) ? 'flex' : 'none';
                 document.getElementById('crosshair').style.display = (isAiming || currentWeaponIndex === 2) ? 'none' : 'block';
 
+                // --- WEAPON SWAY & JOSTLE ---
+                let bobOffsetX = 0;
+                let bobOffsetY = 0;
+                let targetWeaponRotY = 0;
+                let targetWeaponRotZ = 0;
+                let targetWeaponRotX = 0;
+                let targetBoltRotZ = 0;
+                let targetBoltPosZ = -0.05;
+
+                const isMovingInput = (keys.w || keys.s || keys.a || keys.d) && document.pointerLockElement;
+                if (isMovingInput && !isAiming) {
+                    let moveMult = 1.0;
+                    if (isCrouched) moveMult = 0.5; 
+                    else if (keys.shift) moveMult = 2.5; 
+                    
+                    // Figure-8 motion for position
+                    bobOffsetX = Math.cos(bobTime * 0.5) * 0.015 * moveMult;
+                    bobOffsetY = Math.sin(bobTime) * 0.015 * moveMult;
+                    
+                    // Twist and tilt (rotation)
+                    targetWeaponRotZ += Math.cos(bobTime * 0.5) * -0.05 * moveMult;
+                    targetWeaponRotX += Math.sin(bobTime) * 0.02 * moveMult;
+                    targetWeaponRotY += Math.cos(bobTime * 0.5) * 0.04 * moveMult;
+                } else if (!isAiming) {
+                    // Idle breathing sway
+                    bobOffsetY = Math.sin(breathTime) * 0.004;
+                    targetWeaponRotX += Math.sin(breathTime) * 0.005;
+                }
+
                 if (isAiming) {
+                    if (currentWeaponIndex === 2) { targetFov = 75 / sniperZoomLevel; modelSniper.visible = false; } 
+                    else { targetFov = 40; weaponContainer.position.lerp(new THREE.Vector3(0, wep.alignY, -0.25), 15 * dt); }
+                } else {
+                    if (currentWeaponIndex === 2) modelSniper.visible = true;
+                    // Apply position sway offsets to the idle target coordinate
+                    weaponContainer.position.lerp(new THREE.Vector3(0.2 + bobOffsetX, -0.2 + bobOffsetY, -0.4), 15 * dt);
+                }
+
+                if (isActivelyBolting) {
+                    // Add bolt-action tilt on top of the movement sway
+                    targetWeaponRotZ += Math.sin(boltProgress * Math.PI) * 0.25; 
+                    targetWeaponRotX += Math.sin(boltProgress * Math.PI) * -0.05; 
+                    
+                    // 4-stage bolt action animation
+                    if (boltProgress < 0.15) {
+                        // 1. Unlock (rotate up)
+                        targetBoltRotZ = (boltProgress / 0.15) * (-Math.PI / 3);
+                    } else if (boltProgress < 0.4) {
+                        // 2. Pull back
+                        targetBoltRotZ = -Math.PI / 3;
+                        targetBoltPosZ = -0.05 + ((boltProgress - 0.15) / 0.25) * 0.15;
+                    } else if (boltProgress < 0.65) {
+                        // 3. Push forward
+                        targetBoltRotZ = -Math.PI / 3;
+                        targetBoltPosZ = 0.10 - ((boltProgress - 0.4) / 0.25) * 0.15;
+                    } else if (boltProgress < 0.8) {
+                        // 4. Lock (rotate down)
+                        targetBoltRotZ = -Math.PI / 3 + ((boltProgress - 0.65) / 0.15) * (Math.PI / 3);
+                    }
+                }
+                
+                weaponContainer.rotation.z += (targetWeaponRotZ - weaponContainer.rotation.z) * 10 * dt;
+                weaponContainer.rotation.x += (targetWeaponRotX - weaponContainer.rotation.x) * 10 * dt;
+                weaponContainer.rotation.y += (targetWeaponRotY - (weaponContainer.rotation.y || 0)) * 10 * dt;
+                
+                // Animate the bolt handle
+                snBoltGroup.rotation.z += (targetBoltRotZ - snBoltGroup.rotation.z) * 25 * dt;
+                snBoltGroup.position.z += (targetBoltPosZ - snBoltGroup.position.z) * 25 * dt;
+
+                camera.fov += (targetFov - camera.fov) * 15 * dt; camera.updateProjectionMatrix();
+                weaponContainer.position.z += (-0.4 - weaponContainer.position.z) * 10 * dt;
+
+                const targetLeanZ = keys.q ? 0.25 : (keys.e ? -0.25 : 0); 
+                const targetLeanX = keys.q ? -0.5 : (keys.e ? 0.5 : 0);
+                
+                leanObject.rotation.z += (targetLeanZ - leanObject.rotation.z) * 10 * dt; 
+                
+                if (typeof leanObject.userData.baseLocalX === 'undefined') leanObject.userData.baseLocalX = 0;
+                leanObject.userData.baseLocalX += (targetLeanX - leanObject.userData.baseLocalX) * 10 * dt;
+
+                let leanLocalVec = new THREE.Vector3(leanObject.userData.baseLocalX, 0, 0);
+                leanLocalVec.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+                let leanPos2D = { x: playerRoot.position.x + leanLocalVec.x, z: playerRoot.position.z + leanLocalVec.z };
+                
+                resolveObstacles(leanPos2D, 0.3); 
+                
+                let resolvedLocalVec = new THREE.Vector3(leanPos2D.x - playerRoot.position.x, 0, leanPos2D.z - playerRoot.position.z);
+                resolvedLocalVec.applyAxisAngle(new THREE.Vector3(0, 1, 0), -yaw);
+                
+                leanObject.position.x = resolvedLocalVec.x;
+                leanObject.position.z = resolvedLocalVec.z; 
+
+                const targetEyeY = isCrouched ? 0.8 : 1.5; leanObject.position.y += (targetEyeY - leanObject.position.y) * 10 * dt;
+                
+                playerAI.mesh.scale.y = isCrouched ? 0.5 : 1.0; 
+                playerAI.mesh.position.y = isCrouched ? 0.45 : 0.9; 
+                playerAI.mesh.position.x = leanObject.position.x; 
+                playerAI.mesh.position.z = leanObject.position.z; 
+
+                const moveDir = new THREE.Vector3();
+                if (keys.w) moveDir.z -= 1; if (keys.s) moveDir.z += 1; if (keys.a) moveDir.x -= 1; if (keys.d) moveDir.x += 1;
+                if (moveDir.lengthSq() > 0) moveDir.normalize(); moveDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+
+                const speed = (keys.shift && !isCrouched && !isAiming) ? 8 : (isCrouched ? 3 : 5);
+                const velocity = moveDir.multiplyScalar(speed * dt);
+
+                if (moveDir.lengthSq() > 0 && document.pointerLockElement) {
+                    let bobSpeed = isCrouched ? 6 : (keys.shift ? 12 : 8);
+                    let bobAmp = isCrouched ? 0.02 : 0.05;
+                    bobTime += dt * bobSpeed; 
+                    pitchObject.position.y = Math.sin(bobTime) * bobAmp;
+                } else if (document.pointerLockElement) {
+                    // Idle camera breathing
+                    pitchObject.position.y += (Math.sin(breathTime) * 0.015 - pitchObject.position.y) * 5 * dt;
+                } else {
+                    pitchObject.position.y += (0 - pitchObject.position.y) * 10 * dt;
+                }
+
+                let nextPos = playerRoot.position.clone().add(velocity); const pr = 0.4; 
+                
+                if (nextPos.z < -36.3 + pr) nextPos.z = -36.3 + pr; if (nextPos.z > 36.3 - pr) nextPos.z = 36.3 - pr;
+                if (nextPos.x < -95 + pr) nextPos.x = -95 + pr; if (nextPos.x > 95 - pr) nextPos.x = 95 - pr;
+
+                let pPos2D = { x: nextPos.x, z: nextPos.z };
+                resolveObstacles(pPos2D, pr);
+                nextPos.x = pPos2D.x; nextPos.z = pPos2D.z;
+
+                const allLivingAI = [...allies, ...enemies].filter(a => !a.dead);
+                allLivingAI.forEach(ai => {
+                    let dx = nextPos.x - ai.mesh.position.x; let dz = nextPos.z - ai.mesh.position.z; let distSq = dx * dx + dz * dz;
+                    let minDist = 0.8; 
+                    if (distSq < minDist * minDist && distSq > 0.0001) {
+                        let dist = Math.sqrt(distSq); let overlap = minDist - dist;
+                        nextPos.x += (dx / dist) * overlap; nextPos.z += (dz / dist) * overlap;
+                    }
+                });
+
+                playerRoot.position.copy(nextPos);
+                playerRoot.position.y = getTerrainHeight(playerRoot.position.x, playerRoot.position.z);
+            }
+
+            const hurtEl = document.getElementById('hurt-overlay');
+            if (!playerAI.dead && parseFloat(hurtEl.style.opacity) > 0) hurtEl.style.opacity = Math.max(0, parseFloat(hurtEl.style.opacity) - dt);
+
+            if (fpFlashMaterial.opacity > 0) { fpFlashMaterial.opacity = Math.max(0, fpFlashMaterial.opacity - dt * 20); fpFlashLight.intensity = Math.max(0, fpFlashLight.intensity - dt * 40); }
+
+            impacts.forEach(imp => {
+                if (imp.life > 0) { imp.life -= dt; imp.mesh.scale.addScalar(dt * 10); imp.mesh.material.opacity = (imp.life / 0.2); if (imp.life <= 0) imp.mesh.visible = false; }
+            });
+
+            allies.forEach(a => a.update(dt)); enemies.forEach(e => e.update(dt));
+
+            flashes.forEach(f => { if (f.life > 0) { f.life -= dt; if (f.life <= 0) f.mesh.material.opacity = 0; } });
+
+            tracers.forEach(t => {
+                if (t.life > 0) {
+                    t.life -= dt; const moveDist = 150 * dt; t.traveled += moveDist;
+                    if (t.traveled >= t.maxDist) { t.life = 0; t.mesh.visible = false; } 
+                    else { t.mesh.position.add(t.dir.clone().multiplyScalar(moveDist)); }
+                }
+            });
+
+            // Update Ambient Particles
+            const positions = ashParticles.geometry.attributes.position.array;
+            for(let i = 0; i < ashCount * 3; i += 3) {
+                positions[i] -= dt * 1.5; // Drift left
+                positions[i+1] -= dt * 0.8; // Fall down
+                if(positions[i] < -100) positions[i] = 100;
+                if(positions[i+1] < -2) positions[i+1] = 10 + Math.random() * 5;
+            }
+            ashParticles.geometry.attributes.position.needsUpdate = true;
+
+            // Decay Horizon Lights
+            horizonLights.forEach(hl => {
+                if(hl.timer > 0) {
+                    hl.timer -= dt;
+                    if(hl.timer <= 0) hl.light.intensity = 0;
+                } else {
+                    hl.light.intensity = Math.max(0, hl.light.intensity - dt * 20);
+                }
+            });
+
+            // Process Shell Shock Audio Effects
+            if (audioCtx && masterFilter) {
+                if (shellShockTimer > 0) {
+                    shellShockTimer -= dt;
+                    // Instantly muffle when shocked
+                    masterFilter.frequency.setTargetAtTime(300, audioCtx.currentTime, 0.1);
+                    masterGain.gain.setTargetAtTime(0.4, audioCtx.currentTime, 0.1);
+                } else {
+                    // Slowly recover hearing
+                    masterFilter.frequency.setTargetAtTime(22000, audioCtx.currentTime, 2.0);
+                    masterGain.gain.setTargetAtTime(1.0, audioCtx.currentTime, 2.0);
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
+        animate();
+
+    </script>
+</body>
+</html>
