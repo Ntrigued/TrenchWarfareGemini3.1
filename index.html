@@ -219,7 +219,7 @@
                 <p>Select a mode to deploy and lock pointer.</p>
                 <p>
                     <b>WASD</b>: Move &nbsp;|&nbsp; <b>Shift</b>: Sprint &nbsp;|&nbsp; <b>Z</b>: Toggle Crouch<br>
-                    <b>Q / E</b>: Lean Left / Right &nbsp;|&nbsp; <b>T</b>: Mount/Dismount Turret<br>
+                    <b>Q / E</b>: Lean Left / Right &nbsp;|&nbsp; <b>T</b>: Mount/Dismount Turret &nbsp;|&nbsp; <b>R</b>: Reload Turret<br>
                     <b>RMB / Space</b>: Aim Down Sights &nbsp;|&nbsp; <b>LMB</b>: Fire<br>
                     <b>1, 2, 3</b>: Switch Weapons &nbsp;|&nbsp; <b>+ / -</b>: Sniper Zoom
                 </p>
@@ -572,6 +572,12 @@
                 this.mesh = new THREE.Group();
                 this.mesh.position.set(x, y, z); 
                 
+                // --- AMMO MECHANICS ---
+                this.ammo = 5;
+                this.maxAmmo = 5;
+                this.isReloading = false;
+                this.reloadTimer = 0;
+                
                 const base = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.4, 0.6, 8), wallMat);
                 base.position.y = -0.3;
                 this.mesh.add(base);
@@ -613,9 +619,20 @@
                 tFSight.position.set(0, 0.09, -0.95);
                 this.pitchGroup.add(tRSightBase, tRSightL, tRSightR, tFSight);
                 
+                // Dummy Shell for Reload Animation
+                this.dummyShell = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.1, 8), new THREE.MeshLambertMaterial({color: 0xccaa44}));
+                this.dummyShell.rotation.x = Math.PI / 2;
+                this.dummyShell.visible = false;
+                this.pitchGroup.add(this.dummyShell);
+                
                 scene.add(this.mesh);
-                worldMeshes.push(base);
-                worldMeshes.push(shield); // Collisions
+                
+                // Add all main turret parts to worldMeshes so they intercept bullets and block AI Line of Sight
+                worldMeshes.push(base, shield, receiver, barrel); 
+                
+                // Add physical movement block so players and AI can't walk through the turret base
+                collisionObstacles.push({ minX: x - 0.5, maxX: x + 0.5, minZ: z - 0.5, maxZ: z + 0.5 });
+                
                 turrets.push(this);
                 
                 this.user = null;
@@ -639,8 +656,8 @@
                         createWall(x, zPos, 3.5, 1.8, 1.9);
                     } else {
                         const targetZ = isEnemy ? zPos + 1.2 : zPos - 1.2;
-                        // Place turrets in the center gap of the 3 middle sections
-                        if ((i === 1 || i === 2 || i === 3) && count === 3) {
+                        // Place turrets in the center gap of the left and right middle sections (skipping the exact center)
+                        if ((i === 1 || i === 3) && count === 3) {
                             new Turret(x, 2.0, zPos, isEnemy);
                         } else {
                             if (isEnemy) enemyCoversBack.push({ x: x, z: targetZ, y: 1.0 });
@@ -997,6 +1014,14 @@
             if ((code === 'Equal' || code === 'NumpadAdd') && currentWeaponIndex === 2 && (keys.rmb || keys.space)) sniperZoomLevel = Math.min(10, sniperZoomLevel + 1);
             if ((code === 'Minus' || code === 'NumpadSubtract') && currentWeaponIndex === 2 && (keys.rmb || keys.space)) sniperZoomLevel = Math.max(2, sniperZoomLevel - 1);
             
+            // Manual Turret Reloading
+            if (code === 'KeyR') {
+                if (mountedTurret && !mountedTurret.isReloading && mountedTurret.ammo < mountedTurret.maxAmmo) {
+                    mountedTurret.isReloading = true;
+                    mountedTurret.reloadTimer = 0.6; // Start reload
+                }
+            }
+
             if (code === 'KeyT' && !playerAI.dead) {
                 if (mountedTurret) {
                     mountedTurret.user = null;
@@ -1127,9 +1152,13 @@
         }
 
         function shootTurret(turret, shooter) {
+            // Check Reload Logic
+            if (turret.isReloading || turret.ammo <= 0) return; 
+
             const now = performance.now();
-            if (now - turret.lastShot < 600) return; // 600ms explosive cooldown
+            if (now - turret.lastShot < 1800) return; // 1800ms explosive cooldown
             turret.lastShot = now;
+            turret.ammo--; // Reduce ammo
 
             // Tip of the turret barrel
             const barrelPos = new THREE.Vector3(0, 0, -1.1).applyMatrix4(turret.pitchGroup.matrixWorld);
@@ -1610,7 +1639,13 @@
                         this.mesh.position.y = getTerrainHeight(this.mesh.position.x, this.mesh.position.z);
                         
                         // AI firing Logic for Turret
-                        if (this.target && !this.target.dead && this.checkLOS(this.target)) {
+                        if (t.isReloading || t.ammo <= 0) {
+                            // Wait for reload, don't try to shoot
+                            this.shootDelay = 0.5 + Math.random() * 0.5;
+                            t.swivel.rotation.y += (this.scanBaseYaw - t.swivel.rotation.y) * 2 * dt;
+                            t.pitchGroup.rotation.x += (0 - t.pitchGroup.rotation.x) * 2 * dt;
+                            this.mesh.rotation.y = t.swivel.rotation.y + Math.PI; 
+                        } else if (this.target && !this.target.dead && this.checkLOS(this.target)) {
                             let targetPos = new THREE.Vector3();
                             if (this.target.isPlayer) camera.getWorldPosition(targetPos);
                             else targetPos.copy(this.target.mesh.position);
@@ -1644,7 +1679,7 @@
                                 // Ensure barrel is actually facing target before shooting
                                 if (Math.abs(tDiff) < 0.2) {
                                     shootTurret(t, this);
-                                    this.shootDelay = 0.6 + Math.random() * 0.4;
+                                    this.shootDelay = 1.8 + Math.random() * 0.4;
                                 }
                             } else {
                                 this.shootDelay -= dt;
@@ -1655,6 +1690,7 @@
                             // Idle swivel back to baseline
                             t.swivel.rotation.y += (this.scanBaseYaw - t.swivel.rotation.y) * 2 * dt;
                             t.pitchGroup.rotation.x += (0 - t.pitchGroup.rotation.x) * 2 * dt;
+                            this.mesh.rotation.y = t.swivel.rotation.y + Math.PI; 
                         }
                         break;
                     case 'popping':
@@ -2233,9 +2269,66 @@
                     mountedTurret.pitchGroup.rotation.x = pitch;
                 }
                 
-                // Animate ALL turrets recoiling back
+                // --- UPDATE WEAPON UI ---
+                const weaponInd = document.getElementById('weapon-indicator');
+                if (mountedTurret) {
+                    if (mountedTurret.isReloading) {
+                        weaponInd.innerText = `Turret [RELOADING...] (${mountedTurret.ammo}/${mountedTurret.maxAmmo})`;
+                        weaponInd.style.color = '#ffffaa';
+                    } else {
+                        weaponInd.innerText = `Turret (${mountedTurret.ammo}/${mountedTurret.maxAmmo})`;
+                        weaponInd.style.color = mountedTurret.ammo === 0 ? '#ff5555' : 'white';
+                    }
+                } else {
+                    weaponInd.innerText = weaponsData[currentWeaponIndex].name;
+                    weaponInd.style.color = 'white';
+                }
+
+                // Animate ALL turrets recoiling back and handle reloading logic
                 turrets.forEach(t => {
-                    t.pitchGroup.position.z += (0 - t.pitchGroup.position.z) * 10 * dt;
+                    t.pitchGroup.position.z += (0 - t.pitchGroup.position.z) * 10 * dt; // Recoil recovery
+                    
+                    if (t.isReloading) {
+                        // Only actively progress the reload if someone is manning it
+                        if (t.user) {
+                            t.reloadTimer -= dt;
+                            t.dummyShell.visible = true;
+                            
+                            // Animate shell falling into the chamber
+                            let loadProgress = 1.0 - (t.reloadTimer / 0.6);
+                            if (loadProgress > 1) loadProgress = 1;
+                            if (loadProgress < 0) loadProgress = 0;
+                            t.dummyShell.position.set(0, 0.4 - (loadProgress * 0.3), 0.1); 
+                            
+                            if (t.reloadTimer <= 0) {
+                                t.ammo++;
+                                playSoundFile('gunshot', 3.0, 0.05); // High pitched metallic clack
+                                t.pitchGroup.rotation.z = (Math.random() - 0.5) * 0.15; // Visual wobble
+                                
+                                if (t.ammo >= t.maxAmmo) {
+                                    t.isReloading = false;
+                                    t.dummyShell.visible = false;
+                                } else {
+                                    t.reloadTimer = 0.6; // Start next shell
+                                }
+                            }
+                        } else {
+                            // Hide shell mid-air if user dismounts
+                            t.dummyShell.visible = false;
+                        }
+                        
+                        // Return wobble to 0 smoothly
+                        t.pitchGroup.rotation.z += (0 - t.pitchGroup.rotation.z) * 10 * dt;
+                    } else {
+                        t.dummyShell.visible = false;
+                        t.pitchGroup.rotation.z += (0 - t.pitchGroup.rotation.z) * 10 * dt;
+                        
+                        // Auto-start reload if empty and someone is on it
+                        if (t.ammo <= 0 && t.user) {
+                            t.isReloading = true;
+                            t.reloadTimer = 0.6;
+                        }
+                    }
                 });
             }
 
