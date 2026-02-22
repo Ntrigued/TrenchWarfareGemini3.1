@@ -37,6 +37,19 @@
             font-size: 24px;
             font-weight: bold;
         }
+        #action-prompt {
+            position: absolute;
+            bottom: 150px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            font-size: 20px;
+            font-weight: bold;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 10px 20px;
+            border: 2px solid #333;
+            display: none;
+        }
         #healthbar-container {
             position: absolute;
             bottom: 30px;
@@ -189,6 +202,7 @@
             <div class="scope-dot"></div>
         </div>
         <div id="crosshair">+</div>
+        <div id="action-prompt">Press T to use turret</div>
         <div id="hit-marker"></div>
         <div id="healthbar-container">
             <div id="healthbar"></div>
@@ -205,7 +219,7 @@
                 <p>Select a mode to deploy and lock pointer.</p>
                 <p>
                     <b>WASD</b>: Move &nbsp;|&nbsp; <b>Shift</b>: Sprint &nbsp;|&nbsp; <b>Z</b>: Toggle Crouch<br>
-                    <b>Q / E</b>: Lean Left / Right<br>
+                    <b>Q / E</b>: Lean Left / Right &nbsp;|&nbsp; <b>T</b>: Mount/Dismount Turret<br>
                     <b>RMB / Space</b>: Aim Down Sights &nbsp;|&nbsp; <b>LMB</b>: Fire<br>
                     <b>1, 2, 3</b>: Switch Weapons &nbsp;|&nbsp; <b>+ / -</b>: Sniper Zoom
                 </p>
@@ -369,6 +383,9 @@
             if (type === 'impact') {
                 // High pitch snap/thud for nearby bullet impacts
                 playSoundFile('gunshot', 1.5 + Math.random() * 0.5, vol * 0.3); 
+            } else if (type === 'artillery') {
+                // Explosive impact sound with same quadratic drop-off
+                playSoundFile('artillery', 1.2 + Math.random() * 0.3, vol * 1.5);
             } else {
                 // Standard local muzzle gunshot
                 playSoundFile('gunshot', 0.9 + Math.random() * 0.2, vol * 0.7);
@@ -409,6 +426,8 @@
         // --- WORLD GEOMETRY & TERRAIN ---
         const worldMeshes = [];
         const collisionObstacles = [];
+        const turrets = [];
+        let mountedTurret = null;
         
         function getTerrainHeight(x, z) {
             const absZ = Math.abs(z);
@@ -546,17 +565,87 @@
             else addCover(x, 0.5, midCoversEnemy, 1.2);
         }
 
+        // --- EXPLOSIVE TURRETS SETUP ---
+        class Turret {
+            constructor(x, y, z, isEnemy) {
+                this.isEnemy = isEnemy;
+                this.mesh = new THREE.Group();
+                this.mesh.position.set(x, y, z); 
+                
+                const base = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.4, 0.6, 8), wallMat);
+                base.position.y = -0.3;
+                this.mesh.add(base);
+                
+                this.swivel = new THREE.Group();
+                this.swivel.position.y = 0.1;
+                
+                // Set default forward-facing direction (Enemy = 0 (-Z), Ally = PI (+Z))
+                this.baseYaw = isEnemy ? 0 : Math.PI;
+                this.swivel.rotation.y = this.baseYaw;
+                
+                this.mesh.add(this.swivel);
+                
+                this.pitchGroup = new THREE.Group();
+                this.swivel.add(this.pitchGroup);
+                
+                // Shrink receiver box so it doesn't block the screen
+                const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.15, 0.4), new THREE.MeshLambertMaterial({color: 0x1a1a1a}));
+                this.pitchGroup.add(receiver);
+                
+                const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 1.0, 8), new THREE.MeshLambertMaterial({color: 0x111111}));
+                barrel.rotation.x = Math.PI / 2;
+                barrel.position.z = -0.5;
+                this.pitchGroup.add(barrel);
+
+                // Lower shield so we can actually see over it when aiming
+                const shield = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.5, 0.05), new THREE.MeshLambertMaterial({color: 0x3a4530}));
+                shield.position.set(0, -0.15, -0.2);
+                this.pitchGroup.add(shield);
+                
+                // Adjust iron sights closer to the new receiver top
+                const tRSightBase = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.02, 0.04), new THREE.MeshLambertMaterial({ color: 0x111111 }));
+                tRSightBase.position.set(0, 0.08, 0.15);
+                const tRSightL = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.04, 0.04), new THREE.MeshLambertMaterial({ color: 0x111111 }));
+                tRSightL.position.set(-0.04, 0.11, 0.15);
+                const tRSightR = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.04, 0.04), new THREE.MeshLambertMaterial({ color: 0x111111 }));
+                tRSightR.position.set(0.04, 0.11, 0.15);
+                const tFSight = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.06, 0.02), new THREE.MeshLambertMaterial({ color: 0x111111 }));
+                tFSight.position.set(0, 0.09, -0.95);
+                this.pitchGroup.add(tRSightBase, tRSightL, tRSightR, tFSight);
+                
+                scene.add(this.mesh);
+                worldMeshes.push(base);
+                worldMeshes.push(shield); // Collisions
+                turrets.push(this);
+                
+                this.user = null;
+                this.lastShot = 0;
+
+                // Create cover position specifically for this turret so AIs know where to stand
+                const zOffset = this.isEnemy ? 1.0 : -1.0;
+                this.coverPos = { x: this.mesh.position.x, z: this.mesh.position.z + zOffset, isTurret: true, turret: this };
+                if (this.isEnemy) enemyCoversBack.push(this.coverPos);
+                else allyCoversBack.push(this.coverPos);
+            }
+        }
+
         function buildElevatedWallAndCovers(zPos, isEnemy) {
             for (let i = 0; i < blockCenters.length; i++) {
                 const cx = blockCenters[i]; const w = blockWidths[i];
                 createWall(cx, zPos, w, 0.8, 1.4);
                 let startX = cx - w/2 + 2; let endX = cx + w/2 - 2; let count = 0;
                 for (let x = startX; x <= endX; x += 4) {
-                    if (count % 2 === 0) createWall(x, zPos, 3.5, 1.8, 1.9);
-                    else {
+                    if (count % 2 === 0) {
+                        createWall(x, zPos, 3.5, 1.8, 1.9);
+                    } else {
                         const targetZ = isEnemy ? zPos + 1.2 : zPos - 1.2;
-                        if (isEnemy) enemyCoversBack.push({ x: x, z: targetZ, y: 1.0 });
-                        else allyCoversBack.push({ x: x, z: targetZ, y: 1.0 });
+                        // Place turrets in the center gap of the 3 middle sections
+                        if ((i === 1 || i === 2 || i === 3) && count === 3) {
+                            new Turret(x, 2.0, zPos, isEnemy);
+                        } else {
+                            if (isEnemy) enemyCoversBack.push({ x: x, z: targetZ, y: 1.0 });
+                            else allyCoversBack.push({ x: x, z: targetZ, y: 1.0 });
+                        }
                     }
                     count++;
                 }
@@ -665,6 +754,11 @@
                 document.getElementById('hurt-overlay').style.opacity = 0.5;
                 if (playerHp <= 0) {
                     this.dead = true;
+                    if (mountedTurret) {
+                        mountedTurret.user = null;
+                        mountedTurret = null;
+                        weaponContainer.visible = true;
+                    }
                     document.getElementById('hurt-overlay').style.background = 'black';
                     document.getElementById('hurt-overlay').style.opacity = 1.0;
                     setTimeout(() => {
@@ -705,15 +799,10 @@
         const mgStock = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.1, 0.3), new THREE.MeshLambertMaterial({ color: 0x3a2e15 })); mgStock.position.set(0, -0.02, 0.15);
         const mgBipod = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.15), new THREE.MeshLambertMaterial({color: 0x111111})); mgBipod.position.set(0, -0.05, -0.8); mgBipod.rotation.x = Math.PI/4;
         
-        // FIX: Connect front sight downward into the barrel by increasing height to 0.07 and dropping Y to 0.045
-        const mgFSight = new THREE.Mesh(new THREE.BoxGeometry(0.005, 0.07, 0.01), new THREE.MeshLambertMaterial({ color: 0x111111 })); mgFSight.position.set(0, 0.045, -0.85); 
+        // Cleaned up front sight connecting to the barrel, no bulky rear sights
+        const mgFSight = new THREE.Mesh(new THREE.BoxGeometry(0.005, 0.062, 0.01), new THREE.MeshLambertMaterial({ color: 0x111111 })); mgFSight.position.set(0, 0.049, -0.85); 
         
-        // FIX: Add rear sights to create a proper viewing notch that aligns with the exact target
-        const mgRSightBase = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.02, 0.02), new THREE.MeshLambertMaterial({ color: 0x111111 })); mgRSightBase.position.set(0, 0.06, -0.05);
-        const mgRSightL = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.02, 0.02), new THREE.MeshLambertMaterial({ color: 0x111111 })); mgRSightL.position.set(-0.02, 0.08, -0.05);
-        const mgRSightR = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.02, 0.02), new THREE.MeshLambertMaterial({ color: 0x111111 })); mgRSightR.position.set(0.02, 0.08, -0.05);
-        
-        modelMG.add(mgBarrel, mgReceiver, mgMag, mgStock, mgBipod, mgFSight, mgRSightBase, mgRSightL, mgRSightR);
+        modelMG.add(mgBarrel, mgReceiver, mgMag, mgStock, mgBipod, mgFSight);
 
         const modelSniper = new THREE.Group();
         const snBarrel = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.015, 1.2, 8), new THREE.MeshLambertMaterial({ color: 0x222222 })); snBarrel.rotation.x = Math.PI / 2; snBarrel.position.set(0, 0, -0.6);
@@ -763,6 +852,30 @@
             if (f) { f.life = 0.05; f.mesh.position.copy(pos).add(dir.clone().multiplyScalar(0.4)); f.mesh.lookAt(camera.position); f.mesh.material.opacity = 1; }
         }
 
+        const explosions = [];
+        const expGeo = new THREE.SphereGeometry(1, 16, 16); // Higher poly for smoother shockwave
+        const expMat = new THREE.MeshBasicMaterial({ color: 0xffaa00, transparent: true, opacity: 1, depthWrite: false, blending: THREE.AdditiveBlending });
+        for(let i = 0; i < 15; i++) {
+            const m = new THREE.Mesh(expGeo, expMat.clone());
+            m.visible = false;
+            const l = new THREE.PointLight(0xff6600, 0, 40); // Dramatic dynamic lighting flash
+            scene.add(m);
+            scene.add(l);
+            explosions.push({ mesh: m, light: l, life: 0, maxLife: 0.5 });
+        }
+        function createExplosion(pos) {
+            const exp = explosions.find(e => e.life <= 0);
+            if (exp) {
+                exp.life = exp.maxLife;
+                exp.mesh.position.copy(pos);
+                exp.light.position.copy(pos);
+                exp.visible = true;
+                exp.mesh.visible = true;
+                exp.mesh.material.opacity = 1;
+                exp.light.intensity = 20.0;
+            }
+        }
+
         const impacts = [];
         const impactGeo = new THREE.PlaneGeometry(0.3, 0.3); const impactMat = new THREE.MeshBasicMaterial({ color: 0x887755, transparent: true, opacity: 1, depthWrite: false });
         for (let i = 0; i < 40; i++) { const m = new THREE.Mesh(impactGeo, impactMat.clone()); m.visible = false; scene.add(m); impacts.push({ mesh: m, life: 0 }); }
@@ -780,6 +893,7 @@
 
         // --- INPUT & CONTROLS ---
         const keys = { w: false, a: false, s: false, d: false, shift: false, z: false, q: false, e: false, space: false, lmb: false };
+        let lastQPress = 0, lastEPress = 0; let qToggled = false, eToggled = false;
         let lmbJustPressed = false; let isCrouched = false; let yaw = 0; let pitch = 0; let playerHp = 10; let initialized = false; let mgHeat = 0; let mgOverheated = false; let gameMode = 'endless';
         let playerKills = 0;
         
@@ -795,12 +909,20 @@
             playerHp = 10; playerAI.dead = false; document.getElementById('healthbar').style.width = '100%'; document.getElementById('hurt-overlay').style.opacity = 0;
             document.getElementById('hurt-overlay').style.background = 'red'; document.getElementById('victory-screen').style.display = 'none';
             playerRoot.position.set(0, getTerrainHeight(0, -20), -20); yaw = 0; pitch = 0; isCrouched = false; mgHeat = 0; mgOverheated = false;
+            qToggled = false; eToggled = false;
             
             playerKills = 0;
             document.getElementById('kill-count-indicator').innerText = 'Kills: 0';
             sniperNeedsRechamber = false; // Reset bolt state on new game
             sniperZoomLevel = 4; // Reset zoom to default 4x
             
+            if (mountedTurret) {
+                mountedTurret.user = null;
+                mountedTurret = null;
+                weaponContainer.visible = true;
+            }
+            turrets.forEach(t => t.user = null); // Reset all turrets
+
             const totalCount = parseInt(document.getElementById('soldier-count').value, 10) || 100;
             const activeCount = parseInt(document.getElementById('active-count').value, 10) || 45;
 
@@ -822,16 +944,88 @@
         document.getElementById('btn-elimination').addEventListener('click', () => startGame('elimination'));
         document.getElementById('btn-victory-menu').addEventListener('click', () => { document.getElementById('victory-screen').style.display = 'none'; document.getElementById('instructions').style.display = 'flex'; });
         document.addEventListener('pointerlockchange', () => { if (document.getElementById('victory-screen').style.display === 'flex') return; document.getElementById('instructions').style.display = document.pointerLockElement ? 'none' : 'flex'; });
-        document.addEventListener('mousemove', (e) => { if (document.pointerLockElement && !playerAI.dead) { yaw -= e.movementX * 0.002; pitch -= e.movementY * 0.002; pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch)); playerRoot.rotation.y = yaw; pitchObject.rotation.x = pitch; } });
+        document.addEventListener('mousemove', (e) => { 
+            if (document.pointerLockElement && !playerAI.dead) { 
+                yaw -= e.movementX * 0.002; 
+                pitch -= e.movementY * 0.002; 
+                pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch)); 
+                
+                // Limit turret traversal to 90 degrees left and right
+                if (mountedTurret) {
+                    let diff = yaw - mountedTurret.baseYaw;
+                    while (diff < -Math.PI) diff += Math.PI * 2;
+                    while (diff > Math.PI) diff -= Math.PI * 2;
+                    
+                    if (diff > Math.PI / 2) diff = Math.PI / 2;
+                    if (diff < -Math.PI / 2) diff = -Math.PI / 2;
+                    
+                    yaw = mountedTurret.baseYaw + diff;
+                }
+
+                playerRoot.rotation.y = yaw; 
+                pitchObject.rotation.x = pitch; 
+            } 
+        });
 
         document.addEventListener('keydown', e => {
             const code = e.code;
             if (code === 'KeyW') keys.w = true; if (code === 'KeyA') keys.a = true; if (code === 'KeyS') keys.s = true; if (code === 'KeyD') keys.d = true;
-            if (code === 'ShiftLeft' || code === 'ShiftRight') keys.shift = true; if (code === 'KeyQ') keys.q = true; if (code === 'KeyE') keys.e = true; if (code === 'Space') keys.space = true;
+            if (code === 'ShiftLeft' || code === 'ShiftRight') keys.shift = true; 
+            
+            if (code === 'KeyQ') {
+                if (!keys.q) {
+                    const now = performance.now();
+                    if (qToggled) qToggled = false;
+                    else if (now - lastQPress < 300) { qToggled = true; lastQPress = 0; }
+                    else lastQPress = now;
+                }
+                keys.q = true; eToggled = false;
+            }
+            if (code === 'KeyE') {
+                if (!keys.e) {
+                    const now = performance.now();
+                    if (eToggled) eToggled = false;
+                    else if (now - lastEPress < 300) { eToggled = true; lastEPress = 0; }
+                    else lastEPress = now;
+                }
+                keys.e = true; qToggled = false;
+            }
+            if (code === 'Space') keys.space = true;
+
             if (code === 'KeyZ') { if (!keys.z) isCrouched = !isCrouched; keys.z = true; }
             if (code === 'Digit1') switchWeapon(0); if (code === 'Digit2') switchWeapon(1); if (code === 'Digit3') switchWeapon(2);
             if ((code === 'Equal' || code === 'NumpadAdd') && currentWeaponIndex === 2 && (keys.rmb || keys.space)) sniperZoomLevel = Math.min(10, sniperZoomLevel + 1);
             if ((code === 'Minus' || code === 'NumpadSubtract') && currentWeaponIndex === 2 && (keys.rmb || keys.space)) sniperZoomLevel = Math.max(2, sniperZoomLevel - 1);
+            
+            if (code === 'KeyT' && !playerAI.dead) {
+                if (mountedTurret) {
+                    mountedTurret.user = null;
+                    mountedTurret = null;
+                    // Restore weapon visibility
+                    if (currentWeaponIndex === 2) {
+                        modelSniper.visible = true; 
+                    } 
+                    weaponContainer.visible = true;
+                } else {
+                    let nearest = null;
+                    let minDist = 3.0;
+                    turrets.forEach(t => {
+                        if (!t.user && playerRoot.position.distanceTo(t.mesh.position) < minDist) {
+                            nearest = t;
+                            minDist = playerRoot.position.distanceTo(t.mesh.position);
+                        }
+                    });
+                    if (nearest) {
+                        mountedTurret = nearest;
+                        nearest.user = playerAI;
+                        weaponContainer.visible = false; // Hide hand weapons when mounted
+                        isCrouched = false; // Force stand up to see over turret
+                        // Smoothly align player orientation to turret's current orientation
+                        yaw = nearest.swivel.rotation.y;
+                        pitch = nearest.pitchGroup.rotation.x;
+                    }
+                }
+            }
         });
 
         document.addEventListener('keyup', e => {
@@ -932,6 +1126,103 @@
             weaponContainer.position.z += wep.recoilZ;
         }
 
+        function shootTurret(turret, shooter) {
+            const now = performance.now();
+            if (now - turret.lastShot < 600) return; // 600ms explosive cooldown
+            turret.lastShot = now;
+
+            // Tip of the turret barrel
+            const barrelPos = new THREE.Vector3(0, 0, -1.1).applyMatrix4(turret.pitchGroup.matrixWorld);
+            const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(turret.pitchGroup.getWorldQuaternion(new THREE.Quaternion()));
+
+            // Heavy weapon spread
+            dir.x += (Math.random() - 0.5) * 0.02;
+            dir.y += (Math.random() - 0.5) * 0.02;
+            dir.z += (Math.random() - 0.5) * 0.02;
+            dir.normalize();
+
+            showMuzzleFlash(barrelPos, dir);
+            playPositionalSound(barrelPos, 'gunshot'); 
+            
+            turret.pitchGroup.position.z += 0.3; // Heavy visual recoil
+
+            raycaster.set(barrelPos, dir);
+            const allAIMeshes = [...enemies.map(e => e.mesh), ...allies.map(a => a.mesh), playerAI.mesh];
+            const intersects = raycaster.intersectObjects([...worldMeshes, ...allAIMeshes], true);
+
+            let hitDistance = 200;
+            if (intersects.length > 0) {
+                const hit = intersects[0];
+                hitDistance = hit.distance;
+                
+                let normal = hit.face ? hit.face.normal.clone().applyMatrix3(new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld)).normalize() : new THREE.Vector3(0, 1, 0);
+                
+                // Extra visual impact debris for explosive hit
+                createImpact(hit.point, normal);
+                for(let i=0; i<8; i++){
+                    let debrisOffset = new THREE.Vector3((Math.random()-0.5)*5, Math.random()*4, (Math.random()-0.5)*5);
+                    createImpact(hit.point.clone().add(debrisOffset), normal);
+                }
+                
+                // Trigger the new animated explosion sphere & dynamic light!
+                createExplosion(hit.point);
+
+                playPositionalSound(hit.point, 'artillery');
+                
+                // Trigger intense screen shake based on proximity
+                const distToPlayer = camera.getWorldPosition(new THREE.Vector3()).distanceTo(hit.point);
+                if (distToPlayer < 50) {
+                    const shakeAmt = 1.0 - (distToPlayer / 50);
+                    currentScreenShake = Math.max(currentScreenShake, shakeAmt * 0.6);
+                }
+
+                // High Explosive AoE Damage
+                const explosionRadius = 4.0;
+                const hitPool = [...allies, ...enemies, playerAI];
+                hitPool.forEach(t => {
+                    if (!t.dead) {
+                        const posOffset = t.isPlayer ? (isCrouched ? 0.4 : 1.0) : (1.0 - (t.crouchT * 0.45));
+                        const pos = t.isPlayer ? playerRoot.position.clone() : t.mesh.position.clone(); 
+                        pos.y += posOffset;
+                        
+                        if (pos.distanceTo(hit.point) < explosionRadius) {
+                            t.takeDamage(10, shooter); 
+                        }
+                    }
+                });
+                
+                // Trigger player shell shock if explosion is close
+                if (camera.getWorldPosition(new THREE.Vector3()).distanceTo(hit.point) < 8.0) {
+                    triggerShellShock(1.5);
+                }
+            }
+
+            createTracer(barrelPos, dir, hitDistance);
+            
+            // Whiz / Suppression check
+            const bulletRay = new THREE.Ray(barrelPos, dir);
+            const hitPool = [...allies, ...enemies, playerAI];
+            let closestPt = new THREE.Vector3();
+            hitPool.forEach(t => {
+                if (!t.dead) {
+                    const posOffset = t.isPlayer ? (isCrouched ? 0.4 : 1.0) : (1.0 - (t.crouchT * 0.45));
+                    const pos = t.isPlayer ? playerRoot.position.clone() : t.mesh.position.clone(); pos.y += posOffset;
+                    
+                    bulletRay.closestPointToPoint(pos, closestPt);
+                    const distAlongRay = barrelPos.distanceTo(closestPt);
+                    
+                    if (distAlongRay < hitDistance + 1.0) {
+                        const distSq = closestPt.distanceToSquared(pos);
+                        if (!t.isPlayer) {
+                            if (distSq < 16.0) t.alert(shooter); 
+                        } else {
+                            if (distSq < 2.0) playNearMissSound(); 
+                        }
+                    }
+                }
+            });
+        }
+
         // Helper function to prevent AI from spawning in the player's field of view
         function isSpotVisibleToPlayer(spot) {
             const camPos = camera.getWorldPosition(new THREE.Vector3());
@@ -1008,7 +1299,12 @@
             pickCover(isSpawning = false) {
                 let covers = this.getDesiredCovers();
                 const peers = this.isEnemy ? enemies : allies;
-                let available = covers.filter(c => !peers.some(p => p !== this && !p.dead && p.targetCover === c));
+                
+                // Exclude covers taken by alive peers, AND turrets currently occupied by ANYONE
+                let available = covers.filter(c => {
+                    if (c.isTurret && c.turret.user && c.turret.user !== this) return false;
+                    return !peers.some(p => p !== this && !p.dead && p.targetCover === c);
+                });
                 
                 if (available.length === 0) available = covers; // fallback if crowded
                 
@@ -1017,7 +1313,6 @@
                     let safeAvailable = available.filter(c => !isSpotVisibleToPlayer(c));
                     
                     // Only use the safe list if there are actually hidden spots available. 
-                    // Otherwise, fallback to exposed spots so they don't break.
                     if (safeAvailable.length > 0) {
                         available = safeAvailable;
                     }
@@ -1031,6 +1326,11 @@
                 this.dead = false; this.mesh.visible = true; this.state = 'hidden';
                 this.mesh.rotation.x = 0; // Ensure they are standing upright again after a death animation
                 this.deathAnimT = 0;
+                
+                if (this.targetCover && this.targetCover.isTurret && this.targetCover.turret.user === this) {
+                    this.targetCover.turret.user = null;
+                }
+                
                 this.timer = 0.5 + Math.random(); this.target = null; this.targetCover = null; this.scanBaseYaw = this.isEnemy ? Math.PI : 0;
                 this.shootDelay = 0; this.trenchLevel = Math.random() > 0.5 ? 'front' : 'back'; this.crouchT = 1.0; this.aimT = 0.0;
                 
@@ -1088,6 +1388,9 @@
                 
                 if (this.hp <= 0) {
                     this.dead = true;
+                    if (this.targetCover && this.targetCover.isTurret && this.targetCover.turret.user === this) {
+                        this.targetCover.turret.user = null;
+                    }
                     this.deathAnimT = 0.0;
                     this.corpseDelay = 2.0; // Wait 2s on ground before fading
                     this.timer = 3 + Math.random() * 2; // Respawn delay AFTER corpse vanishes
@@ -1202,8 +1505,11 @@
                         
                         if (this.state === 'moving') this.interruptedMove = true;
                         
-                        this.state = 'aiming';
-                        this.shootDelay = 0.2 + Math.random() * 0.2; 
+                        // Prevent interrupting turret usage for every small threat if already engaged
+                        if (this.state !== 'using_turret') {
+                            this.state = 'aiming';
+                            this.shootDelay = 0.2 + Math.random() * 0.2; 
+                        }
                     }
                 }
 
@@ -1256,8 +1562,13 @@
                         let finalDist = Math.sqrt(finalDx*finalDx + finalDz*finalDz);
                         
                         if (finalDist < 0.2) {
-                            this.state = 'hidden';
-                            this.timer = 0.2 + Math.random() * 0.3;
+                            if (this.targetCover && this.targetCover.isTurret) {
+                                this.state = 'hidden'; 
+                                this.timer = 0.1; // short delay before grabbing it
+                            } else {
+                                this.state = 'hidden';
+                                this.timer = 0.2 + Math.random() * 0.3;
+                            }
                         } else {
                             if (dist < 0.1) { dx = finalDx; dz = finalDz; dist = finalDist; } 
                             this.mesh.position.x += (dx/dist) * moveSpeed * dt;
@@ -1271,7 +1582,80 @@
                         break;
                     case 'hidden':
                         targetCrouch = 1.0; 
-                        if (this.timer <= 0) { this.state = 'popping'; this.timer = 0.3; }
+                        if (this.timer <= 0) { 
+                            if (this.targetCover && this.targetCover.isTurret) {
+                                if (!this.targetCover.turret.user || this.targetCover.turret.user === this) {
+                                    this.state = 'using_turret';
+                                } else {
+                                    this.pickCover();
+                                    this.state = 'moving';
+                                }
+                            } else {
+                                this.state = 'popping'; 
+                                this.timer = 0.3; 
+                            }
+                        }
+                        break;
+                    case 'using_turret':
+                        targetCrouch = 0.0; targetAim = 0.0; // Stand behind
+                        const t = this.targetCover.turret;
+                        if (!t || (t.user && t.user !== this)) {
+                            this.state = 'hidden'; break; // Turret was hijacked or lost
+                        }
+                        t.user = this; // Claim it
+                        
+                        // Lock AI position tightly to turret mount
+                        this.mesh.position.x = t.mesh.position.x;
+                        this.mesh.position.z = t.mesh.position.z + (this.isEnemy ? 1.0 : -1.0);
+                        this.mesh.position.y = getTerrainHeight(this.mesh.position.x, this.mesh.position.z);
+                        
+                        // AI firing Logic for Turret
+                        if (this.target && !this.target.dead && this.checkLOS(this.target)) {
+                            let targetPos = new THREE.Vector3();
+                            if (this.target.isPlayer) camera.getWorldPosition(targetPos);
+                            else targetPos.copy(this.target.mesh.position);
+                            
+                            // Align turret yaw (+PI because turret default barrel points to -Z)
+                            const tx = targetPos.x - t.mesh.position.x;
+                            const tz = targetPos.z - t.mesh.position.z;
+                            let targetTurretYaw = Math.atan2(tx, tz) + Math.PI; 
+                            
+                            // Restrict AI rotation to 90 degrees left/right of the turret's default forward
+                            let aiYawDiff = targetTurretYaw - t.baseYaw;
+                            while (aiYawDiff < -Math.PI) aiYawDiff += Math.PI * 2; 
+                            while (aiYawDiff > Math.PI) aiYawDiff -= Math.PI * 2;
+                            if (aiYawDiff > Math.PI / 2) targetTurretYaw = t.baseYaw + Math.PI / 2;
+                            if (aiYawDiff < -Math.PI / 2) targetTurretYaw = t.baseYaw - Math.PI / 2;
+
+                            let tDiff = targetTurretYaw - t.swivel.rotation.y;
+                            while (tDiff < -Math.PI) tDiff += Math.PI * 2; while (tDiff > Math.PI) tDiff -= Math.PI * 2;
+                            t.swivel.rotation.y += tDiff * 5 * dt;
+                            
+                            // Align turret pitch
+                            const tDist2d = Math.sqrt(tx*tx + tz*tz);
+                            const ty = targetPos.y - (t.mesh.position.y + 0.3);
+                            const targetTurretPitch = Math.atan2(ty, tDist2d); 
+                            t.pitchGroup.rotation.x += (targetTurretPitch - t.pitchGroup.rotation.x) * 5 * dt;
+
+                            // Sync AI body yaw to look like they are holding it
+                            this.mesh.rotation.y = t.swivel.rotation.y + Math.PI; 
+                            
+                            if (this.shootDelay <= 0) {
+                                // Ensure barrel is actually facing target before shooting
+                                if (Math.abs(tDiff) < 0.2) {
+                                    shootTurret(t, this);
+                                    this.shootDelay = 0.6 + Math.random() * 0.4;
+                                }
+                            } else {
+                                this.shootDelay -= dt;
+                            }
+                        } else {
+                            this.target = this.findTarget();
+                            this.shootDelay = 0.5 + Math.random() * 0.5;
+                            // Idle swivel back to baseline
+                            t.swivel.rotation.y += (this.scanBaseYaw - t.swivel.rotation.y) * 2 * dt;
+                            t.pitchGroup.rotation.x += (0 - t.pitchGroup.rotation.x) * 2 * dt;
+                        }
                         break;
                     case 'popping':
                         targetCrouch = 0.0; targetAim = 1.0;
@@ -1380,7 +1764,7 @@
                 }
                 this.mesh.position.z = Math.max(minZ, Math.min(maxZ, this.mesh.position.z));
 
-                if (this.state !== 'moving' && this.targetCover) {
+                if (this.state !== 'moving' && this.state !== 'using_turret' && this.targetCover && !this.targetCover.isTurret) {
                     this.mesh.position.x += (this.targetCover.x - this.mesh.position.x) * 2 * dt;
                     this.mesh.position.z += (this.targetCover.z - this.mesh.position.z) * 2 * dt;
                 }
@@ -1571,6 +1955,7 @@
         let lastTime = performance.now();
         let bobTime = 0;
         let breathTime = 0;
+        let currentScreenShake = 0;
 
         function animate() {
             requestAnimationFrame(animate);
@@ -1601,14 +1986,19 @@
                 }
                 
                 const heatContainer = document.getElementById('heatbar-container');
-                if (currentWeaponIndex === 1) {
+                if (currentWeaponIndex === 1 && !mountedTurret) {
                     heatContainer.style.display = 'block';
                     document.getElementById('heatbar').style.width = mgHeat + '%';
                     document.getElementById('heatbar').style.background = mgOverheated ? '#ff0000' : '#ff8800';
                 } else heatContainer.style.display = 'none';
 
                 const wep = weaponsData[currentWeaponIndex];
-                if (keys.lmb) { if (wep.type === 'auto' || lmbJustPressed) shootPlayer(); }
+                
+                // Allow shooting from hand weapon OR mounted turret
+                if (keys.lmb) { 
+                    if (mountedTurret) shootTurret(mountedTurret, playerAI);
+                    else if (wep.type === 'auto' || lmbJustPressed) shootPlayer(); 
+                }
                 lmbJustPressed = false;
 
                 // Enforce bolt action sniper delay independently
@@ -1617,7 +2007,7 @@
                 let isActivelyBolting = false;
                 let boltProgress = 0;
 
-                if (currentWeaponIndex === 2 && sniperNeedsRechamber) {
+                if (currentWeaponIndex === 2 && sniperNeedsRechamber && !mountedTurret) {
                     isRechambering = true;
                     const timeSinceBoltStart = now - sniperRechamberStartTime;
                     
@@ -1632,8 +2022,34 @@
 
                 // Wait to pull out of scope until the bolt animation actually begins
                 const isAiming = (keys.rmb || keys.space) && !isActivelyBolting; let targetFov = 75;
-                document.getElementById('scope-overlay').style.display = (isAiming && currentWeaponIndex === 2) ? 'flex' : 'none';
-                document.getElementById('crosshair').style.display = (isAiming || currentWeaponIndex === 2) ? 'none' : 'block';
+                document.getElementById('scope-overlay').style.display = (isAiming && currentWeaponIndex === 2 && !mountedTurret) ? 'flex' : 'none';
+                
+                let hideCrosshair = false;
+                if (mountedTurret) {
+                    hideCrosshair = isAiming; // Hide crosshair when aiming down turret sights
+                } else {
+                    hideCrosshair = isAiming || currentWeaponIndex === 2; // Standard weapon crosshair logic
+                }
+                document.getElementById('crosshair').style.display = hideCrosshair ? 'none' : 'block';
+
+                // --- UI INTERACTION PROMPT ---
+                const promptEl = document.getElementById('action-prompt');
+                let canMount = false;
+                if (!mountedTurret) {
+                    turrets.forEach(t => {
+                        if (!t.user && playerRoot.position.distanceTo(t.mesh.position) < 3.0) canMount = true;
+                    });
+                }
+                
+                if (mountedTurret) {
+                    promptEl.style.display = 'block';
+                    promptEl.innerText = "Press T to leave turret";
+                } else if (canMount) {
+                    promptEl.style.display = 'block';
+                    promptEl.innerText = "Press T to use turret";
+                } else {
+                    promptEl.style.display = 'none';
+                }
 
                 // --- WEAPON SWAY & JOSTLE ---
                 let bobOffsetX = 0;
@@ -1644,10 +2060,10 @@
                 let targetBoltRotZ = 0;
                 let targetBoltPosZ = -0.05;
 
-                const isMovingInput = (keys.w || keys.s || keys.a || keys.d) && document.pointerLockElement;
+                const isMovingInput = (keys.w || keys.s || keys.a || keys.d) && document.pointerLockElement && !mountedTurret;
                 if (isMovingInput && !isAiming) {
                     let moveMult = 1.0;
-                    if (isCrouched) moveMult = 0.5; 
+                    if (isCrouched) moveMult = keys.shift ? 1.5 : 0.5; 
                     else if (keys.shift) moveMult = 2.5; 
                     
                     // Figure-8 motion for position
@@ -1658,22 +2074,24 @@
                     targetWeaponRotZ += Math.cos(bobTime * 0.5) * -0.05 * moveMult;
                     targetWeaponRotX += Math.sin(bobTime) * 0.02 * moveMult;
                     targetWeaponRotY += Math.cos(bobTime * 0.5) * 0.04 * moveMult;
-                } else if (!isAiming) {
+                } else if (!isAiming && !mountedTurret) {
                     // Idle breathing sway
                     bobOffsetY = Math.sin(breathTime) * 0.004;
                     targetWeaponRotX += Math.sin(breathTime) * 0.005;
                 }
 
-                if (isAiming) {
+                if (isAiming && !mountedTurret) {
                     if (currentWeaponIndex === 2) { targetFov = 75 / sniperZoomLevel; modelSniper.visible = false; } 
                     else { targetFov = 40; weaponContainer.position.lerp(new THREE.Vector3(0, wep.alignY, -0.25), 15 * dt); }
-                } else {
+                } else if (!mountedTurret) {
                     if (currentWeaponIndex === 2) modelSniper.visible = true;
                     // Apply position sway offsets to the idle target coordinate
                     weaponContainer.position.lerp(new THREE.Vector3(0.2 + bobOffsetX, -0.2 + bobOffsetY, -0.4), 15 * dt);
+                } else if (mountedTurret) {
+                    targetFov = isAiming ? 40 : 75;
                 }
 
-                if (isActivelyBolting) {
+                if (isActivelyBolting && !mountedTurret) {
                     // Add bolt-action tilt on top of the movement sway
                     targetWeaponRotZ += Math.sin(boltProgress * Math.PI) * 0.25; 
                     targetWeaponRotX += Math.sin(boltProgress * Math.PI) * -0.05; 
@@ -1707,79 +2125,149 @@
                 camera.fov += (targetFov - camera.fov) * 15 * dt; camera.updateProjectionMatrix();
                 weaponContainer.position.z += (-0.4 - weaponContainer.position.z) * 10 * dt;
 
-                const targetLeanZ = keys.q ? 0.25 : (keys.e ? -0.25 : 0); 
-                const targetLeanX = keys.q ? -0.5 : (keys.e ? 0.5 : 0);
+                const isLeaningLeft = (keys.q || qToggled) && !mountedTurret;
+                const isLeaningRight = (keys.e || eToggled) && !mountedTurret && !isLeaningLeft;
+
+                const targetLeanZ = isLeaningLeft ? 0.25 : (isLeaningRight ? -0.25 : 0); 
+                const targetLeanX = isLeaningLeft ? -0.5 : (isLeaningRight ? 0.5 : 0);
                 
                 leanObject.rotation.z += (targetLeanZ - leanObject.rotation.z) * 10 * dt; 
                 
                 if (typeof leanObject.userData.baseLocalX === 'undefined') leanObject.userData.baseLocalX = 0;
                 leanObject.userData.baseLocalX += (targetLeanX - leanObject.userData.baseLocalX) * 10 * dt;
 
-                let leanLocalVec = new THREE.Vector3(leanObject.userData.baseLocalX, 0, 0);
-                leanLocalVec.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
-                let leanPos2D = { x: playerRoot.position.x + leanLocalVec.x, z: playerRoot.position.z + leanLocalVec.z };
-                
-                resolveObstacles(leanPos2D, 0.3); 
-                
-                let resolvedLocalVec = new THREE.Vector3(leanPos2D.x - playerRoot.position.x, 0, leanPos2D.z - playerRoot.position.z);
-                resolvedLocalVec.applyAxisAngle(new THREE.Vector3(0, 1, 0), -yaw);
-                
-                leanObject.position.x = resolvedLocalVec.x;
-                leanObject.position.z = resolvedLocalVec.z; 
+                let targetCamY = 0;
+                let targetCamZ = 0;
 
-                const targetEyeY = isCrouched ? 0.8 : 1.5; leanObject.position.y += (targetEyeY - leanObject.position.y) * 10 * dt;
-                
-                playerAI.mesh.scale.y = isCrouched ? 0.5 : 1.0; 
-                playerAI.mesh.position.y = isCrouched ? 0.45 : 0.9; 
-                playerAI.mesh.position.x = leanObject.position.x; 
-                playerAI.mesh.position.z = leanObject.position.z; 
+                if (!mountedTurret) {
+                    let leanLocalVec = new THREE.Vector3(leanObject.userData.baseLocalX, 0, 0);
+                    leanLocalVec.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+                    let leanPos2D = { x: playerRoot.position.x + leanLocalVec.x, z: playerRoot.position.z + leanLocalVec.z };
+                    
+                    resolveObstacles(leanPos2D, 0.3); 
+                    
+                    let resolvedLocalVec = new THREE.Vector3(leanPos2D.x - playerRoot.position.x, 0, leanPos2D.z - playerRoot.position.z);
+                    resolvedLocalVec.applyAxisAngle(new THREE.Vector3(0, 1, 0), -yaw);
+                    
+                    leanObject.position.x = resolvedLocalVec.x;
+                    leanObject.position.z = resolvedLocalVec.z; 
 
-                const moveDir = new THREE.Vector3();
-                if (keys.w) moveDir.z -= 1; if (keys.s) moveDir.z += 1; if (keys.a) moveDir.x -= 1; if (keys.d) moveDir.x += 1;
-                if (moveDir.lengthSq() > 0) moveDir.normalize(); moveDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+                    const targetEyeY = isCrouched ? 0.8 : 1.5; 
+                    leanObject.position.y += (targetEyeY - leanObject.position.y) * 10 * dt;
+                    
+                    pitchObject.position.z += (0 - pitchObject.position.z) * 15 * dt; // Reset Z when unmounted
+                    
+                    playerAI.mesh.scale.y = isCrouched ? 0.5 : 1.0; 
+                    playerAI.mesh.position.y = isCrouched ? 0.45 : 0.9; 
+                    playerAI.mesh.position.x = leanObject.position.x; 
+                    playerAI.mesh.position.z = leanObject.position.z; 
 
-                const speed = (keys.shift && !isCrouched && !isAiming) ? 8 : (isCrouched ? 3 : 5);
-                const velocity = moveDir.multiplyScalar(speed * dt);
+                    const moveDir = new THREE.Vector3();
+                    if (keys.w) moveDir.z -= 1; if (keys.s) moveDir.z += 1; if (keys.a) moveDir.x -= 1; if (keys.d) moveDir.x += 1;
+                    if (moveDir.lengthSq() > 0) moveDir.normalize(); moveDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
 
-                if (moveDir.lengthSq() > 0 && document.pointerLockElement) {
-                    let bobSpeed = isCrouched ? 6 : (keys.shift ? 12 : 8);
-                    let bobAmp = isCrouched ? 0.02 : 0.05;
-                    bobTime += dt * bobSpeed; 
-                    pitchObject.position.y = Math.sin(bobTime) * bobAmp;
-                } else if (document.pointerLockElement) {
-                    // Idle camera breathing
-                    pitchObject.position.y += (Math.sin(breathTime) * 0.015 - pitchObject.position.y) * 5 * dt;
-                } else {
-                    pitchObject.position.y += (0 - pitchObject.position.y) * 10 * dt;
-                }
-
-                let nextPos = playerRoot.position.clone().add(velocity); const pr = 0.4; 
-                
-                if (nextPos.z < -36.3 + pr) nextPos.z = -36.3 + pr; if (nextPos.z > 36.3 - pr) nextPos.z = 36.3 - pr;
-                if (nextPos.x < -95 + pr) nextPos.x = -95 + pr; if (nextPos.x > 95 - pr) nextPos.x = 95 - pr;
-
-                let pPos2D = { x: nextPos.x, z: nextPos.z };
-                resolveObstacles(pPos2D, pr);
-                nextPos.x = pPos2D.x; nextPos.z = pPos2D.z;
-
-                const allLivingAI = [...allies, ...enemies].filter(a => !a.dead);
-                allLivingAI.forEach(ai => {
-                    let dx = nextPos.x - ai.mesh.position.x; let dz = nextPos.z - ai.mesh.position.z; let distSq = dx * dx + dz * dz;
-                    let minDist = 0.8; 
-                    if (distSq < minDist * minDist && distSq > 0.0001) {
-                        let dist = Math.sqrt(distSq); let overlap = minDist - dist;
-                        nextPos.x += (dx / dist) * overlap; nextPos.z += (dz / dist) * overlap;
+                    let speed = 5; let bobSpeed = 8; let bobAmp = 0.05;
+                    if (isCrouched) {
+                        if (keys.shift && !isAiming) { speed = 6.5; bobSpeed = 10; bobAmp = 0.035; } // Crouch sprint
+                        else { speed = 3; bobSpeed = 6; bobAmp = 0.02; } // Crouch walk
+                    } else {
+                        if (keys.shift && !isAiming) { speed = 8; bobSpeed = 12; bobAmp = 0.05; } // Stand sprint
+                        else { speed = 5; bobSpeed = 8; bobAmp = 0.05; } // Stand walk
                     }
-                });
+                    const velocity = moveDir.multiplyScalar(speed * dt);
 
-                playerRoot.position.copy(nextPos);
-                playerRoot.position.y = getTerrainHeight(playerRoot.position.x, playerRoot.position.z);
+                    if (moveDir.lengthSq() > 0 && document.pointerLockElement) {
+                        bobTime += dt * bobSpeed; 
+                        pitchObject.position.y = Math.sin(bobTime) * bobAmp;
+                    } else if (document.pointerLockElement) {
+                        // Idle camera breathing
+                        pitchObject.position.y += (Math.sin(breathTime) * 0.015 - pitchObject.position.y) * 5 * dt;
+                    } else {
+                        pitchObject.position.y += (0 - pitchObject.position.y) * 10 * dt;
+                    }
+
+                    let nextPos = playerRoot.position.clone().add(velocity); const pr = 0.4; 
+                    
+                    if (nextPos.z < -36.3 + pr) nextPos.z = -36.3 + pr; if (nextPos.z > 36.3 - pr) nextPos.z = 36.3 - pr;
+                    if (nextPos.x < -95 + pr) nextPos.x = -95 + pr; if (nextPos.x > 95 - pr) nextPos.x = 95 - pr;
+
+                    let pPos2D = { x: nextPos.x, z: nextPos.z };
+                    resolveObstacles(pPos2D, pr);
+                    nextPos.x = pPos2D.x; nextPos.z = pPos2D.z;
+
+                    const allLivingAI = [...allies, ...enemies].filter(a => !a.dead);
+                    allLivingAI.forEach(ai => {
+                        let dx = nextPos.x - ai.mesh.position.x; let dz = nextPos.z - ai.mesh.position.z; let distSq = dx * dx + dz * dz;
+                        let minDist = 0.8; 
+                        if (distSq < minDist * minDist && distSq > 0.0001) {
+                            let dist = Math.sqrt(distSq); let overlap = minDist - dist;
+                            nextPos.x += (dx / dist) * overlap; nextPos.z += (dz / dist) * overlap;
+                        }
+                    });
+
+                    playerRoot.position.copy(nextPos);
+                    playerRoot.position.y = getTerrainHeight(playerRoot.position.x, playerRoot.position.z);
+                } else {
+                    // Lock lean object dead-center onto the turret's swivel pivot point
+                    leanObject.position.x += (0 - leanObject.position.x) * 15 * dt;
+                    leanObject.position.z += (0 - leanObject.position.z) * 15 * dt;
+                    leanObject.position.y += (0.1 - leanObject.position.y) * 15 * dt; // Match swivel height precisely
+                    
+                    // Reset pitchObject translation back to 0 so we pivot exactly around the swivel!
+                    pitchObject.position.z += (0 - pitchObject.position.z) * 15 * dt;
+                    pitchObject.position.y += (0 - pitchObject.position.y) * 15 * dt;
+                    
+                    // Move the actual camera backwards/upwards relative to the pivot
+                    targetCamZ = isAiming ? 0.25 : 0.8; 
+                    targetCamY = isAiming ? 0.105 : 0.35; // 0.105 aligns flawlessly with the iron sights line-of-sight
+                
+                    // Shift the internal camera position to orbit the pivot
+                    camera.position.y += (targetCamY - camera.position.y) * 15 * dt;
+                    camera.position.z += (targetCamZ - camera.position.z) * 15 * dt;
+                    
+                    // Lock player root exactly to the base of the turret so their pivots match perfectly
+                    playerRoot.position.copy(mountedTurret.mesh.position);
+                    
+                    // Sync the heavy turret mesh directly to the player's mouse view
+                    mountedTurret.swivel.rotation.y = yaw;
+                    mountedTurret.pitchGroup.rotation.x = pitch;
+                }
+                
+                // Animate ALL turrets recoiling back
+                turrets.forEach(t => {
+                    t.pitchGroup.position.z += (0 - t.pitchGroup.position.z) * 10 * dt;
+                });
             }
 
             const hurtEl = document.getElementById('hurt-overlay');
             if (!playerAI.dead && parseFloat(hurtEl.style.opacity) > 0) hurtEl.style.opacity = Math.max(0, parseFloat(hurtEl.style.opacity) - dt);
 
             if (fpFlashMaterial.opacity > 0) { fpFlashMaterial.opacity = Math.max(0, fpFlashMaterial.opacity - dt * 20); fpFlashLight.intensity = Math.max(0, fpFlashLight.intensity - dt * 40); }
+
+            explosions.forEach(exp => {
+                if (exp.life > 0) {
+                    exp.life -= dt;
+                    let t = 1.0 - (exp.life / exp.maxLife); 
+                    if (t > 1) t = 1;
+                    
+                    // Explosive shockwave scaling (fast pop, slow end)
+                    const scale = 0.5 + (Math.pow(t, 0.4) * 9.0); 
+                    exp.mesh.scale.set(scale, scale, scale);
+                    
+                    // Dramatic color shift: White hot -> Bright Orange -> Dark Smoky Red
+                    if (t < 0.15) exp.mesh.material.color.setHex(0xffffff);
+                    else if (t < 0.4) exp.mesh.material.color.setHex(0xff8800);
+                    else exp.mesh.material.color.setHex(0x330800);
+                    
+                    exp.mesh.material.opacity = (1.0 - t) * 0.9;
+                    exp.light.intensity = Math.max(0, 20.0 * (1.0 - (t * 1.5))); // Flash fades quickly
+                    
+                    if (exp.life <= 0) {
+                        exp.mesh.visible = false;
+                        exp.light.intensity = 0;
+                    }
+                }
+            });
 
             impacts.forEach(imp => {
                 if (imp.life > 0) { imp.life -= dt; imp.mesh.scale.addScalar(dt * 10); imp.mesh.material.opacity = (imp.life / 0.2); if (imp.life <= 0) imp.mesh.visible = false; }
@@ -1831,7 +2319,26 @@
                 }
             }
 
+            // Apply temporary screen shake offsets
+            let sx = 0, sy = 0, sz = 0;
+            if (currentScreenShake > 0) {
+                currentScreenShake -= dt;
+                sx = (Math.random() - 0.5) * currentScreenShake;
+                sy = (Math.random() - 0.5) * currentScreenShake;
+                sz = (Math.random() - 0.5) * currentScreenShake;
+                camera.position.x += sx;
+                camera.position.y += sy;
+                camera.position.z += sz;
+            }
+
             renderer.render(scene, camera);
+
+            // Immediately revert camera shake offsets so true logical aiming isn't ruined
+            if (sx !== 0 || sy !== 0 || sz !== 0) {
+                camera.position.x -= sx;
+                camera.position.y -= sy;
+                camera.position.z -= sz;
+            }
         }
 
         window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
