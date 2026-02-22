@@ -228,14 +228,14 @@
             
             <div style="margin: 20px 0; display: flex; flex-direction: column; align-items: center; background: rgba(0,0,0,0.5); padding: 15px; border-radius: 8px; border: 1px solid #444; width: 340px;">
                 <label for="soldier-count" style="font-size: 16px; font-weight: bold; margin-bottom: 5px;">
-                    Total Forces (Elimination): <span id="soldier-count-display">100</span>
+                    Total Forces (Elimination): <span id="soldier-count-display">500</span>
                 </label>
-                <input type="range" id="soldier-count" min="10" max="1000" value="100" style="width: 250px; cursor: pointer; margin-bottom: 15px;">
+                <input type="range" id="soldier-count" min="10" max="1000" value="500" style="width: 250px; cursor: pointer; margin-bottom: 15px;">
 
                 <label for="active-count" style="font-size: 16px; font-weight: bold; margin-bottom: 5px;">
-                    Max Active on Field: <span id="active-count-display">45</span>
+                    Max Active on Field: <span id="active-count-display">25</span>
                 </label>
-                <input type="range" id="active-count" min="10" max="100" value="45" style="width: 250px; cursor: pointer;">
+                <input type="range" id="active-count" min="10" max="100" value="25" style="width: 250px; cursor: pointer;">
             </div>
 
             <div style="display: flex; gap: 20px;">
@@ -526,6 +526,22 @@
         createWall(0, -36.75, 200, 2.0, 2.0);  
         createWall(0, 36.75, 200, 2.0, 2.0);   
 
+        // Add random jagged buttresses and dirt mounds to break up the flat, straight trench walls
+        for(let i=0; i<50; i++) {
+            let bx = (Math.random() - 0.5) * 190;
+            let bz = Math.random() > 0.5 ? (-17.5 + (Math.random() * 1.5)) : (17.5 - (Math.random() * 1.5));
+            if (Math.abs(bx + 60) < 5 || Math.abs(bx + 20) < 5 || Math.abs(bx - 20) < 5 || Math.abs(bx - 60) < 5) continue; // Keep ramps clear
+            
+            let bw = 1.0 + Math.random() * 4.0;
+            let bh = 1.0 + Math.random() * 1.5;
+            let bm = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, 0.8 + Math.random()), Math.random() > 0.5 ? wallMat : groundMat);
+            bm.position.set(bx, -1.2 + bh/2, bz);
+            bm.rotation.y = (Math.random() - 0.5) * 0.4;
+            scene.add(bm);
+            worldMeshes.push(bm);
+            collisionObstacles.push({ minX: bx - bw/2, maxX: bx + bw/2, minZ: bz - 0.6, maxZ: bz + 0.6 });
+        }
+
         const sideWallGeo = new THREE.BoxGeometry(2, 10, 80);
         const sw1 = new THREE.Mesh(sideWallGeo, wallMat); sw1.position.set(-100, 0, 0);
         const sw2 = new THREE.Mesh(sideWallGeo, wallMat); sw2.position.set(100, 0, 0);
@@ -542,27 +558,31 @@
         const midCoversEnemy = [];
 
         function addCover(x, z, arr, dirZ) {
-            let mesh = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.4, 1), woodMat);
-            mesh.position.set(x, -0.5, z);
+            let mesh = new THREE.Mesh(new THREE.BoxGeometry(1.2 + Math.random() * 0.8, 1.2 + Math.random() * 0.5, 0.8 + Math.random() * 0.4), woodMat);
+            mesh.position.set(x, -0.6, z);
+            mesh.rotation.y = (Math.random() - 0.5) * 1.5; // Random messy rotation
             scene.add(mesh); worldMeshes.push(mesh);
-            collisionObstacles.push({ minX: x - 0.75, maxX: x + 0.75, minZ: z - 0.5, maxZ: z + 0.5 });
+            collisionObstacles.push({ minX: x - 0.9, maxX: x + 0.9, minZ: z - 0.7, maxZ: z + 0.7 });
             arr.push({ x: x, z: z + dirZ, y: -1.2 });
         }
 
-        addCover(-41.5, -12, allyPathCovers, -1.2);
-        addCover(-38.5, -6, allyPathCovers, -1.2);
-        addCover(41.5, -12, allyPathCovers, -1.2);
-        addCover(38.5, -6, allyPathCovers, -1.2);
+        // Jittered Path Covers
+        addCover(-41.5 + Math.random()*2, -12 + (Math.random()-0.5)*3, allyPathCovers, -1.2);
+        addCover(-38.5 - Math.random()*2, -6 + (Math.random()-0.5)*3, allyPathCovers, -1.2);
+        addCover(41.5 + Math.random()*2, -12 + (Math.random()-0.5)*3, allyPathCovers, -1.2);
+        addCover(38.5 - Math.random()*2, -6 + (Math.random()-0.5)*3, allyPathCovers, -1.2);
         
-        addCover(-41.5, 12, enemyPathCovers, 1.2);
-        addCover(-38.5, 6, enemyPathCovers, 1.2);
-        addCover(41.5, 12, enemyPathCovers, 1.2);
-        addCover(38.5, 6, enemyPathCovers, 1.2);
+        addCover(-41.5 + Math.random()*2, 12 + (Math.random()-0.5)*3, enemyPathCovers, 1.2);
+        addCover(-38.5 - Math.random()*2, 6 + (Math.random()-0.5)*3, enemyPathCovers, 1.2);
+        addCover(41.5 + Math.random()*2, 12 + (Math.random()-0.5)*3, enemyPathCovers, 1.2);
+        addCover(38.5 - Math.random()*2, 6 + (Math.random()-0.5)*3, enemyPathCovers, 1.2);
 
-        for (let x = -90; x <= 90; x += 6) {
-            if (Math.abs(x + 40) < 4 || Math.abs(x - 40) < 4) continue; 
-            if (x % 12 === 0) addCover(x, -0.5, midCoversAlly, -1.2);
-            else addCover(x, 0.5, midCoversEnemy, 1.2);
+        // Randomized Mid-field Skirmish Covers
+        for (let x = -90; x <= 90; x += 5 + Math.random() * 6) {
+            if (Math.abs(x + 40) < 5 || Math.abs(x - 40) < 5) continue; 
+            let zOff = (Math.random() - 0.5) * 12; // Massive vertical scatter in No Man's Land
+            if (Math.random() > 0.5) addCover(x, -2.5 + zOff, midCoversAlly, -1.2);
+            else addCover(x, 2.5 + zOff, midCoversEnemy, 1.2);
         }
 
         // --- EXPLOSIVE TURRETS SETUP ---
@@ -671,28 +691,44 @@
         buildElevatedWallAndCovers(-26.25, false);
         buildElevatedWallAndCovers(26.25, true);
 
-        for (let x = -96; x <= 96; x += 4) {
+        // Scattered messy front-line cover
+        for (let x = -96; x <= 96; x += 4 + Math.random() * 3) {
             if (Math.abs(x + 60) < 5 || Math.abs(x + 20) < 5 || Math.abs(x - 20) < 5 || Math.abs(x - 60) < 5) continue; 
             if (Math.abs(x + 40) < 4 || Math.abs(x - 40) < 4) continue; 
 
-            let oxA = x + (Math.random() - 0.5);
-            addCover(oxA, -18.5, allyCoversFront, -1.2);
+            let oxA = x + (Math.random() - 0.5) * 2;
+            addCover(oxA, -18.5 + (Math.random() - 0.5), allyCoversFront, -1.2);
 
-            let oxE = x + (Math.random() - 0.5);
-            addCover(oxE, 18.5, enemyCoversFront, 1.2);
+            let oxE = x + (Math.random() - 0.5) * 2;
+            addCover(oxE, 18.5 + (Math.random() - 0.5), enemyCoversFront, 1.2);
         }
 
-        for (let i = 0; i < 40; i++) {
-            const x = (Math.random() - 0.5) * 160;
-            const z = (Math.random() > 0.5 ? 1 : -1) * (2.0 + Math.random() * 15.5); 
-            if (Math.abs(x + 40) < 3.5 || Math.abs(x - 40) < 3.5) continue;
+        // Random chaotic debris boxes
+        for (let i = 0; i < 60; i++) {
+            const x = (Math.random() - 0.5) * 180;
+            const z = (Math.random() - 0.5) * 35; // Spread out across the whole mid-field
+            if (Math.abs(x + 40) < 4 || Math.abs(x - 40) < 4) continue;
 
-            const mesh = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.5, 1.5), woodMat);
-            mesh.position.set(x, 0.75, z); 
-            mesh.rotation.y = Math.random() * Math.PI;
-            mesh.rotation.x = Math.random() * 0.5;
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.8 + Math.random(), 0.5 + Math.random(), 0.8 + Math.random()), Math.random() > 0.5 ? woodMat : wallMat);
+            mesh.position.set(x, getTerrainHeight(x, z) + 0.2, z); 
+            mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
             scene.add(mesh);
-            worldMeshes.push(mesh);
+            worldMeshes.push(mesh); // Bullets can hit them
+        }
+
+        // Ground Craters / Scorch Marks
+        const craterGeo = new THREE.PlaneGeometry(3, 3);
+        const craterMat = new THREE.MeshBasicMaterial({ color: 0x1a1c14, depthWrite: false, transparent: true, opacity: 0.8 });
+        for(let i=0; i<120; i++) {
+            let cr = new THREE.Mesh(craterGeo, craterMat);
+            let cx = (Math.random() - 0.5) * 190;
+            let cz = (Math.random() - 0.5) * 36; 
+            let s = 0.5 + Math.random() * 2;
+            cr.scale.set(s, s, s);
+            cr.rotation.x = -Math.PI / 2;
+            cr.rotation.z = Math.random() * Math.PI;
+            cr.position.set(cx, getTerrainHeight(cx, cz) + 0.02, cz);
+            scene.add(cr);
         }
 
         // --- ATMOSPHERIC VISUALS ---
@@ -852,8 +888,37 @@
             }
         }
 
-        const fpFlashMaterial = new THREE.MeshBasicMaterial({ color: 0xffddaa, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
-        const fpFlashGroup = new THREE.Group(); fpFlashGroup.add(new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.3), fpFlashMaterial), new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.3), fpFlashMaterial));
+        // --- PROCEDURAL MUZZLE FLASH TEXTURE ---
+        const flashTexCanvas = document.createElement('canvas'); 
+        flashTexCanvas.width = 128; flashTexCanvas.height = 128;
+        const fctx = flashTexCanvas.getContext('2d');
+        const fgrad = fctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+        fgrad.addColorStop(0, "rgba(255, 255, 255, 1)");
+        fgrad.addColorStop(0.2, "rgba(255, 220, 100, 1)");
+        fgrad.addColorStop(0.5, "rgba(255, 100, 0, 0.8)");
+        fgrad.addColorStop(1, "rgba(0, 0, 0, 0)");
+        fctx.fillStyle = fgrad; fctx.fillRect(0, 0, 128, 128);
+        fctx.fillStyle = "rgba(255, 220, 150, 0.9)";
+        fctx.beginPath();
+        for(let i=0; i<20; i++) {
+            let angle = (i/20) * Math.PI * 2 + (Math.random() - 0.5) * 0.2; // Add random jitter to angles
+            let r = 20 + Math.random() * 40; // Highly variable spike lengths
+            let px = 64 + Math.cos(angle) * r; let py = 64 + Math.sin(angle) * r;
+            
+            let innerAngle = angle + (Math.PI/20) * (0.8 + Math.random() * 0.4);
+            let innerR = 10 + Math.random() * 15; // Randomize the depth of the inner cutouts
+            let ix = 64 + Math.cos(innerAngle) * innerR; let iy = 64 + Math.sin(innerAngle) * innerR;
+            
+            if(i===0) fctx.moveTo(px, py); else fctx.lineTo(px, py);
+            fctx.lineTo(ix, iy);
+        }
+        fctx.fill();
+        const flashTexture = new THREE.CanvasTexture(flashTexCanvas);
+
+        const fpFlashMaterial = new THREE.MeshBasicMaterial({ map: flashTexture, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
+        const fpFlashGroup = new THREE.Group(); 
+        // Scaled up slightly because the texture has transparent padding around the edges
+        fpFlashGroup.add(new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), fpFlashMaterial), new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), fpFlashMaterial));
         fpFlashGroup.children[0].rotation.z = Math.PI / 4; fpFlashGroup.children[1].rotation.z = -Math.PI / 4; fpFlashGroup.position.set(0, 0, -0.85);
         const fpFlashLight = new THREE.PointLight(0xffddaa, 0, 5); fpFlashLight.position.set(0, 0, -0.85);
         weaponContainer.add(fpFlashGroup, fpFlashLight);
@@ -861,12 +926,27 @@
         // --- EFFECTS ---
         const flashes = [];
         for (let i = 0; i < 20; i++) {
-            const f = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.6), new THREE.MeshBasicMaterial({ color: 0xffddaa, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending }));
+            const f = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.8), new THREE.MeshBasicMaterial({ map: flashTexture, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
             scene.add(f); flashes.push({ mesh: f, life: 0 });
         }
         function showMuzzleFlash(pos, dir) {
             const f = flashes.find(fl => fl.life <= 0);
-            if (f) { f.life = 0.05; f.mesh.position.copy(pos).add(dir.clone().multiplyScalar(0.4)); f.mesh.lookAt(camera.position); f.mesh.material.opacity = 1; }
+            if (f) { 
+                f.life = 0.05; 
+                f.mesh.position.copy(pos).add(dir.clone().multiplyScalar(0.4)); 
+                
+                // Fix: Orient the flash orthogonally to the barrel direction, not the camera
+                f.mesh.lookAt(f.mesh.position.clone().add(dir)); 
+                
+                f.mesh.rotateZ(Math.random() * Math.PI * 2); // Spin randomly on spawn
+                
+                // Randomly flip and scale slightly to make the single texture look highly varied
+                const sx = (Math.random() > 0.5 ? 1 : -1) * (0.7 + Math.random() * 0.6);
+                const sy = (Math.random() > 0.5 ? 1 : -1) * (0.7 + Math.random() * 0.6);
+                f.mesh.scale.set(sx, sy, 1);
+                
+                f.mesh.material.opacity = 1; 
+            }
         }
 
         const explosions = [];
@@ -940,8 +1020,8 @@
             }
             turrets.forEach(t => t.user = null); // Reset all turrets
 
-            const totalCount = parseInt(document.getElementById('soldier-count').value, 10) || 100;
-            const activeCount = parseInt(document.getElementById('active-count').value, 10) || 45;
+            const totalCount = parseInt(document.getElementById('soldier-count').value, 10) || 500;
+            const activeCount = parseInt(document.getElementById('active-count').value, 10) || 25;
 
             if (mode === 'elimination') {
                 const initialSpawn = Math.min(totalCount, activeCount);
@@ -1091,7 +1171,13 @@
             const camDir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.getWorldQuaternion(new THREE.Quaternion()));
             if (wep.type === 'auto') { camDir.x += (Math.random() - 0.5) * 0.015; camDir.y += (Math.random() - 0.5) * 0.015; camDir.normalize(); }
 
-            fpFlashMaterial.opacity = 1.0; fpFlashLight.intensity = 2.0; fpFlashGroup.rotation.z = Math.random() * Math.PI;
+            fpFlashMaterial.opacity = 1.0; fpFlashLight.intensity = 2.0; 
+            fpFlashGroup.rotation.z = Math.random() * Math.PI;
+            
+            // Randomize first person flash scale and flip
+            let fsx = (Math.random() > 0.5 ? 1 : -1) * (0.8 + Math.random() * 0.4);
+            let fsy = (Math.random() > 0.5 ? 1 : -1) * (0.8 + Math.random() * 0.4);
+            fpFlashGroup.scale.set(fsx, fsy, 1);
 
             raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
             if (wep.type === 'auto') raycaster.set(camera.getWorldPosition(new THREE.Vector3()), camDir);
@@ -1156,7 +1242,8 @@
             if (turret.isReloading || turret.ammo <= 0) return; 
 
             const now = performance.now();
-            if (now - turret.lastShot < 1800) return; // 1800ms explosive cooldown
+            const cooldown = (shooter && shooter.isPlayer) ? 600 : 1800; // Player shoots much faster
+            if (now - turret.lastShot < cooldown) return; 
             turret.lastShot = now;
             turret.ammo--; // Reduce ammo
 
@@ -1165,9 +1252,14 @@
             const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(turret.pitchGroup.getWorldQuaternion(new THREE.Quaternion()));
 
             // Heavy weapon spread
-            dir.x += (Math.random() - 0.5) * 0.02;
-            dir.y += (Math.random() - 0.5) * 0.02;
-            dir.z += (Math.random() - 0.5) * 0.02;
+            let spread = 0.02;
+            if (shooter && !shooter.isPlayer) {
+                spread = 0.15; // Give AIs terrible aim with the turret so they don't laser beam other AIs
+            }
+            
+            dir.x += (Math.random() - 0.5) * spread;
+            dir.y += (Math.random() - 0.5) * spread;
+            dir.z += (Math.random() - 0.5) * spread;
             dir.normalize();
 
             showMuzzleFlash(barrelPos, dir);
@@ -1422,6 +1514,11 @@
 
             takeDamage(amount, attacker) {
                 if (this.dead || this.hp <= 0) return;
+                
+                // Massively reduce damage taken from other AI to prolong skirmishes
+                if (attacker && !attacker.isPlayer) {
+                    amount = 0.05; // Flat tiny amount. Takes 20-40 hits to kill another AI, stopping AoE multi-kills.
+                }
                 
                 this.hp -= amount;
                 
@@ -1919,7 +2016,14 @@
                 else { const targetHeightOffset = 1.55 - (this.target.crouchT * 0.45); targetPos.copy(this.target.mesh.position).add(new THREE.Vector3(0, targetHeightOffset, 0)); }
                 
                 const dir = targetPos.clone().sub(eyeStart).normalize(); const dist = eyeStart.distanceTo(targetPos);
-                const spread = 0.05 + (dist * 0.002); dir.x += (Math.random() - 0.5) * spread; dir.y += (Math.random() - 0.5) * spread; dir.z += (Math.random() - 0.5) * spread; dir.normalize();
+                
+                // Calculate spread, and massively decrease accuracy if shooting at another AI to prolong skirmishes
+                let spread = 0.05 + (dist * 0.002);
+                if (!this.target.isPlayer) {
+                    spread *= 8.0; // Increased stormtrooper aim for AI vs AI
+                }
+                
+                dir.x += (Math.random() - 0.5) * spread; dir.y += (Math.random() - 0.5) * spread; dir.z += (Math.random() - 0.5) * spread; dir.normalize();
 
                 showMuzzleFlash(visualStart, dir); raycaster.set(eyeStart, dir);
                 
@@ -1995,7 +2099,7 @@
             allies.length = 0; enemies.length = 0;
             for (let i = 0; i < count; i++) { allies.push(new AI(false)); enemies.push(new AI(true)); }
         }
-        spawnSoldiers(45);
+        spawnSoldiers(25);
 
         // --- GAME LOOP ---
         let lastTime = performance.now();
