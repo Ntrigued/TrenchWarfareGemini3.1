@@ -218,10 +218,10 @@
                 <h2>TRENCH WARFARE</h2>
                 <p>Select a mode to deploy and lock pointer.</p>
                 <p>
-                    <b>WASD</b>: Move &nbsp;|&nbsp; <b>Shift</b>: Sprint &nbsp;|&nbsp; <b>Z</b>: Toggle Crouch<br>
-                    <b>Q / E</b>: Lean Left / Right &nbsp;|&nbsp; <b>T</b>: Mount/Dismount Turret &nbsp;|&nbsp; <b>R</b>: Reload Turret<br>
+                    <b>WASD</b>: Move &nbsp;|&nbsp; <b>Shift</b>: Sprint &nbsp;|&nbsp; <b>C</b>: Toggle Crouch / Slide<br>
+                    <b>Q / E</b>: Lean Left / Right &nbsp;|&nbsp; <b>T</b>: Mount Turret &nbsp;|&nbsp; <b>R</b>: Reload Turret &nbsp;|&nbsp; <b>Z</b>: Go Prone<br>
                     <b>RMB / Space</b>: Aim Down Sights &nbsp;|&nbsp; <b>LMB</b>: Fire<br>
-                    <b>1, 2, 3</b>: Switch Weapons &nbsp;|&nbsp; <b>+ / -</b>: Sniper Zoom
+                    <b>1, 2, 3</b>: Switch Weapons &nbsp;|&nbsp; <b>F / G</b>: Sniper Zoom
                 </p>
                 <p style="color:#aaa; font-size:14px;">Survive an endless onslaught or eliminate the enemy reinforcements.</p>
             </div>
@@ -558,11 +558,16 @@
         const midCoversEnemy = [];
 
         function addCover(x, z, arr, dirZ) {
-            let mesh = new THREE.Mesh(new THREE.BoxGeometry(1.2 + Math.random() * 0.8, 1.2 + Math.random() * 0.5, 0.8 + Math.random() * 0.4), woodMat);
+            let bw = 1.2 + Math.random() * 0.8;
+            let bd = 0.8 + Math.random() * 0.4;
+            let mesh = new THREE.Mesh(new THREE.BoxGeometry(bw, 1.2 + Math.random() * 0.5, bd), woodMat);
             mesh.position.set(x, -0.6, z);
             mesh.rotation.y = (Math.random() - 0.5) * 1.5; // Random messy rotation
             scene.add(mesh); worldMeshes.push(mesh);
-            collisionObstacles.push({ minX: x - 0.9, maxX: x + 0.9, minZ: z - 0.7, maxZ: z + 0.7 });
+            
+            // Use the calculated dimensions to create a reliable bounding box that accounts for the messy rotation
+            let maxR = Math.max(bw, bd) / 1.5; 
+            collisionObstacles.push({ minX: x - maxR, maxX: x + maxR, minZ: z - maxR, maxZ: z + maxR });
             arr.push({ x: x, z: z + dirZ, y: -1.2 });
         }
 
@@ -667,6 +672,18 @@
         }
 
         function buildElevatedWallAndCovers(zPos, isEnemy) {
+            // Pick 1 left block (0 or 1) and 1 right block (3 or 4) to ensure they are on opposite sides
+            const leftBlock = Math.random() > 0.5 ? 0 : 1;
+            const rightBlock = Math.random() > 0.5 ? 3 : 4;
+            const turretBlocks = [leftBlock, rightBlock];
+            
+            // Pick a random window (odd count index) for those chosen blocks
+            const turretCounts = {};
+            turretBlocks.forEach(b => {
+                const possibleCounts = [1, 3, 5, 7];
+                turretCounts[b] = possibleCounts[Math.floor(Math.random() * possibleCounts.length)];
+            });
+
             for (let i = 0; i < blockCenters.length; i++) {
                 const cx = blockCenters[i]; const w = blockWidths[i];
                 createWall(cx, zPos, w, 0.8, 1.4);
@@ -676,8 +693,8 @@
                         createWall(x, zPos, 3.5, 1.8, 1.9);
                     } else {
                         const targetZ = isEnemy ? zPos + 1.2 : zPos - 1.2;
-                        // Place turrets in the center gap of the left and right middle sections (skipping the exact center)
-                        if ((i === 1 || i === 3) && count === 3) {
+                        // Place turrets in the randomly chosen windows
+                        if (turretCounts[i] === count) {
                             new Turret(x, 2.0, zPos, isEnemy);
                         } else {
                             if (isEnemy) enemyCoversBack.push({ x: x, z: targetZ, y: 1.0 });
@@ -709,11 +726,18 @@
             const z = (Math.random() - 0.5) * 35; // Spread out across the whole mid-field
             if (Math.abs(x + 40) < 4 || Math.abs(x - 40) < 4) continue;
 
-            const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.8 + Math.random(), 0.5 + Math.random(), 0.8 + Math.random()), Math.random() > 0.5 ? woodMat : wallMat);
+            let bw = 0.8 + Math.random();
+            let bh = 0.5 + Math.random();
+            let bd = 0.8 + Math.random();
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bd), Math.random() > 0.5 ? woodMat : wallMat);
             mesh.position.set(x, getTerrainHeight(x, z) + 0.2, z); 
             mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
             scene.add(mesh);
             worldMeshes.push(mesh); // Bullets can hit them
+            
+            // Add physical collision so players and AI can't walk through them
+            let maxR = Math.max(bw, bh, bd) / 1.8;
+            collisionObstacles.push({ minX: x - maxR, maxX: x + maxR, minZ: z - maxR, maxZ: z + maxR });
         }
 
         // Ground Craters / Scorch Marks
@@ -827,7 +851,7 @@
         const weaponContainer = new THREE.Group(); camera.add(weaponContainer); weaponContainer.position.set(0.2, -0.2, -0.4);
         const weaponsData = [
             { id: 'rifle', name: '1: Rifle', type: 'semi', fireRate: 250, recoilPitch: 0.0066, recoilZ: 0.033, barrelLen: -0.8, soundPitch: 1.0, alignY: -0.06 },
-            { id: 'mg', name: '2: Machine Gun', type: 'auto', fireRate: 100, recoilPitch: 0.0066, recoilZ: 0.033, barrelLen: -0.9, soundPitch: 1.1, alignY: -0.08 },
+            { id: 'mg', name: '2: Machine Gun', type: 'auto', fireRate: 100, recoilPitch: 0.012, recoilZ: 0.05, barrelLen: -0.9, soundPitch: 1.1, alignY: -0.08 },
             { id: 'sniper', name: '3: Sniper Rifle', type: 'semi', fireRate: 1500, recoilPitch: 0.0198, recoilZ: 0.1, barrelLen: -1.2, soundPitch: 0.7, alignY: 0 } // Sniper fireRate increased to 1.5s for bolt action
         ];
         let currentWeaponIndex = 0; let sniperZoomLevel = 4;
@@ -890,35 +914,29 @@
 
         // --- PROCEDURAL MUZZLE FLASH TEXTURE ---
         const flashTexCanvas = document.createElement('canvas'); 
-        flashTexCanvas.width = 128; flashTexCanvas.height = 128;
+        flashTexCanvas.width = 16; flashTexCanvas.height = 16;
         const fctx = flashTexCanvas.getContext('2d');
-        const fgrad = fctx.createRadialGradient(64, 64, 0, 64, 64, 64);
-        fgrad.addColorStop(0, "rgba(255, 255, 255, 1)");
-        fgrad.addColorStop(0.2, "rgba(255, 220, 100, 1)");
-        fgrad.addColorStop(0.5, "rgba(255, 100, 0, 0.8)");
-        fgrad.addColorStop(1, "rgba(0, 0, 0, 0)");
-        fctx.fillStyle = fgrad; fctx.fillRect(0, 0, 128, 128);
-        fctx.fillStyle = "rgba(255, 220, 150, 0.9)";
-        fctx.beginPath();
-        for(let i=0; i<20; i++) {
-            let angle = (i/20) * Math.PI * 2 + (Math.random() - 0.5) * 0.2; // Add random jitter to angles
-            let r = 20 + Math.random() * 40; // Highly variable spike lengths
-            let px = 64 + Math.cos(angle) * r; let py = 64 + Math.sin(angle) * r;
-            
-            let innerAngle = angle + (Math.PI/20) * (0.8 + Math.random() * 0.4);
-            let innerR = 10 + Math.random() * 15; // Randomize the depth of the inner cutouts
-            let ix = 64 + Math.cos(innerAngle) * innerR; let iy = 64 + Math.sin(innerAngle) * innerR;
-            
-            if(i===0) fctx.moveTo(px, py); else fctx.lineTo(px, py);
-            fctx.lineTo(ix, iy);
-        }
-        fctx.fill();
+        
+        // Blocky, pixel-art style flash to match the primitive 3D aesthetic
+        fctx.fillStyle = "rgba(200, 50, 0, 0.5)"; 
+        fctx.fillRect(6, 2, 4, 12); fctx.fillRect(2, 6, 12, 4);
+        
+        fctx.fillStyle = "rgba(255, 120, 0, 0.8)"; 
+        fctx.fillRect(7, 3, 2, 10); fctx.fillRect(3, 7, 10, 2); fctx.fillRect(5, 5, 6, 6);
+        
+        fctx.fillStyle = "rgba(255, 220, 100, 1)"; 
+        fctx.fillRect(6, 6, 4, 4);
+        
+        fctx.fillStyle = "rgba(255, 255, 255, 1)"; 
+        fctx.fillRect(7, 7, 2, 2);
+
         const flashTexture = new THREE.CanvasTexture(flashTexCanvas);
+        flashTexture.magFilter = THREE.NearestFilter; // Preserve hard pixel edges
+        flashTexture.minFilter = THREE.NearestFilter;
 
         const fpFlashMaterial = new THREE.MeshBasicMaterial({ map: flashTexture, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
         const fpFlashGroup = new THREE.Group(); 
-        // Scaled up slightly because the texture has transparent padding around the edges
-        fpFlashGroup.add(new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), fpFlashMaterial), new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), fpFlashMaterial));
+        fpFlashGroup.add(new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.3), fpFlashMaterial), new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.3), fpFlashMaterial));
         fpFlashGroup.children[0].rotation.z = Math.PI / 4; fpFlashGroup.children[1].rotation.z = -Math.PI / 4; fpFlashGroup.position.set(0, 0, -0.85);
         const fpFlashLight = new THREE.PointLight(0xffddaa, 0, 5); fpFlashLight.position.set(0, 0, -0.85);
         weaponContainer.add(fpFlashGroup, fpFlashLight);
@@ -926,7 +944,7 @@
         // --- EFFECTS ---
         const flashes = [];
         for (let i = 0; i < 20; i++) {
-            const f = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.8), new THREE.MeshBasicMaterial({ map: flashTexture, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+            const f = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), new THREE.MeshBasicMaterial({ map: flashTexture, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
             scene.add(f); flashes.push({ mesh: f, life: 0 });
         }
         function showMuzzleFlash(pos, dir) {
@@ -989,9 +1007,9 @@
         }
 
         // --- INPUT & CONTROLS ---
-        const keys = { w: false, a: false, s: false, d: false, shift: false, z: false, q: false, e: false, space: false, lmb: false };
+        const keys = { w: false, a: false, s: false, d: false, shift: false, z: false, c: false, q: false, e: false, space: false, lmb: false };
         let lastQPress = 0, lastEPress = 0; let qToggled = false, eToggled = false;
-        let lmbJustPressed = false; let isCrouched = false; let yaw = 0; let pitch = 0; let playerHp = 10; let initialized = false; let mgHeat = 0; let mgOverheated = false; let gameMode = 'endless';
+        let lmbJustPressed = false; let isCrouched = false; let isProne = false; let slideTimer = 0; let slideSpeed = 0; let slideDir = new THREE.Vector3(); let yaw = 0; let pitch = 0; let playerHp = 10; let initialized = false; let mgHeat = 0; let mgOverheated = false; let gameMode = 'endless';
         let playerKills = 0;
         
         let allyReserves = 0;
@@ -1005,7 +1023,7 @@
             if (!initialized) { initAudio(); startAmbientBattle(); initialized = true; }
             playerHp = 10; playerAI.dead = false; document.getElementById('healthbar').style.width = '100%'; document.getElementById('hurt-overlay').style.opacity = 0;
             document.getElementById('hurt-overlay').style.background = 'red'; document.getElementById('victory-screen').style.display = 'none';
-            playerRoot.position.set(0, getTerrainHeight(0, -20), -20); yaw = 0; pitch = 0; isCrouched = false; mgHeat = 0; mgOverheated = false;
+            playerRoot.position.set(0, getTerrainHeight(0, -20), -20); yaw = 0; pitch = 0; isCrouched = false; isProne = false; slideTimer = 0; mgHeat = 0; mgOverheated = false;
             qToggled = false; eToggled = false;
             
             playerKills = 0;
@@ -1089,10 +1107,39 @@
             }
             if (code === 'Space') keys.space = true;
 
-            if (code === 'KeyZ') { if (!keys.z) isCrouched = !isCrouched; keys.z = true; }
+            if (code === 'KeyC') { 
+                if (!keys.c) { 
+                    // Prevent sliding if already crouched
+                    let isSprintMoving = (keys.w || keys.a || keys.s || keys.d) && keys.shift && !isProne && !isCrouched && !mountedTurret;
+                    if (slideTimer > 0) {
+                        slideTimer = 0; // cancel active slide
+                        isCrouched = false;
+                    } else if (isSprintMoving) {
+                        isCrouched = true; isProne = false; // End in crouch
+                        slideTimer = 0.75; slideSpeed = 16.0;
+                        let mDir = new THREE.Vector3();
+                        if (keys.w) mDir.z -= 1; if (keys.s) mDir.z += 1; if (keys.a) mDir.x -= 1; if (keys.d) mDir.x += 1;
+                        if (mDir.lengthSq() > 0) mDir.normalize(); mDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+                        slideDir.copy(mDir);
+                    } else {
+                        if (isProne) { isProne = false; isCrouched = true; } // From prone to crouch
+                        else if (isCrouched) { isCrouched = false; } // Stand up if already crouched
+                        else { isCrouched = !isCrouched; }
+                    }
+                } 
+                keys.c = true; 
+            }
+            if (code === 'KeyZ') { 
+                if (!keys.z) {
+                    slideTimer = 0;
+                    if (isProne) { isProne = false; isCrouched = true; }
+                    else { isProne = true; isCrouched = false; }
+                } 
+                keys.z = true; 
+            }
             if (code === 'Digit1') switchWeapon(0); if (code === 'Digit2') switchWeapon(1); if (code === 'Digit3') switchWeapon(2);
-            if ((code === 'Equal' || code === 'NumpadAdd') && currentWeaponIndex === 2 && (keys.rmb || keys.space)) sniperZoomLevel = Math.min(10, sniperZoomLevel + 1);
-            if ((code === 'Minus' || code === 'NumpadSubtract') && currentWeaponIndex === 2 && (keys.rmb || keys.space)) sniperZoomLevel = Math.max(2, sniperZoomLevel - 1);
+            if (code === 'KeyF' && currentWeaponIndex === 2 && (keys.rmb || keys.space)) sniperZoomLevel = Math.min(10, sniperZoomLevel + 1);
+            if (code === 'KeyG' && currentWeaponIndex === 2 && (keys.rmb || keys.space)) sniperZoomLevel = Math.max(2, sniperZoomLevel - 1);
             
             // Manual Turret Reloading
             if (code === 'KeyR') {
@@ -1115,7 +1162,9 @@
                     let nearest = null;
                     let minDist = 3.0;
                     turrets.forEach(t => {
-                        if (!t.user && playerRoot.position.distanceTo(t.mesh.position) < minDist) {
+                        // Allow mounting if unoccupied OR if occupied by a friendly AI
+                        const canClaim = !t.user || (t.user && !t.user.isEnemy && t.user !== playerAI);
+                        if (canClaim && playerRoot.position.distanceTo(t.mesh.position) < minDist) {
                             nearest = t;
                             minDist = playerRoot.position.distanceTo(t.mesh.position);
                         }
@@ -1124,7 +1173,7 @@
                         mountedTurret = nearest;
                         nearest.user = playerAI;
                         weaponContainer.visible = false; // Hide hand weapons when mounted
-                        isCrouched = false; // Force stand up to see over turret
+                        isCrouched = false; isProne = false; slideTimer = 0; // Force stand up to see over turret
                         // Smoothly align player orientation to turret's current orientation
                         yaw = nearest.swivel.rotation.y;
                         pitch = nearest.pitchGroup.rotation.x;
@@ -1137,7 +1186,7 @@
             const code = e.code;
             if (code === 'KeyW') keys.w = false; if (code === 'KeyA') keys.a = false; if (code === 'KeyS') keys.s = false; if (code === 'KeyD') keys.d = false;
             if (code === 'ShiftLeft' || code === 'ShiftRight') keys.shift = false; if (code === 'KeyQ') keys.q = false; if (code === 'KeyE') keys.e = false; if (code === 'Space') keys.space = false;
-            if (code === 'KeyZ') keys.z = false;
+            if (code === 'KeyZ') keys.z = false; if (code === 'KeyC') keys.c = false;
         });
 
         document.addEventListener('mousedown', e => { if (!document.pointerLockElement) return; if (e.button === 2) keys.rmb = true; if (e.button === 0) { keys.lmb = true; lmbJustPressed = true; } });
@@ -1233,7 +1282,23 @@
                 }
             });
 
-            pitch += wep.recoilPitch; pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch)); pitchObject.rotation.x = pitch;
+            // Recoil & Jostle
+            let actualRecoil = wep.recoilPitch * (0.8 + Math.random() * 0.4); // Slight randomization to vertical climb
+            pitch += actualRecoil; 
+            pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch)); 
+            pitchObject.rotation.x = pitch;
+            
+            if (wep.type === 'auto') {
+                // Horizontal camera kick
+                yaw += (Math.random() - 0.5) * actualRecoil * 1.5;
+                playerRoot.rotation.y = yaw;
+                
+                // Violent visual weapon twist
+                weaponContainer.rotation.z += (Math.random() - 0.5) * 0.15;
+                weaponContainer.rotation.x -= Math.random() * 0.05;
+                weaponContainer.rotation.y += (Math.random() - 0.5) * 0.05;
+            }
+
             weaponContainer.position.z += wep.recoilZ;
         }
 
@@ -1302,7 +1367,7 @@
                 const hitPool = [...allies, ...enemies, playerAI];
                 hitPool.forEach(t => {
                     if (!t.dead) {
-                        const posOffset = t.isPlayer ? (isCrouched ? 0.4 : 1.0) : (1.0 - (t.crouchT * 0.45));
+                        const posOffset = t.isPlayer ? ((isProne || slideTimer > 0) ? 0.15 : (isCrouched ? 0.4 : 1.0)) : (1.0 - (t.crouchT * 0.45));
                         const pos = t.isPlayer ? playerRoot.position.clone() : t.mesh.position.clone(); 
                         pos.y += posOffset;
                         
@@ -1326,7 +1391,7 @@
             let closestPt = new THREE.Vector3();
             hitPool.forEach(t => {
                 if (!t.dead) {
-                    const posOffset = t.isPlayer ? (isCrouched ? 0.4 : 1.0) : (1.0 - (t.crouchT * 0.45));
+                    const posOffset = t.isPlayer ? ((isProne || slideTimer > 0) ? 0.15 : (isCrouched ? 0.4 : 1.0)) : (1.0 - (t.crouchT * 0.45));
                     const pos = t.isPlayer ? playerRoot.position.clone() : t.mesh.position.clone(); pos.y += posOffset;
                     
                     bulletRay.closestPointToPoint(pos, closestPt);
@@ -1427,8 +1492,43 @@
             }
 
             pickCover(isSpawning = false) {
-                let covers = this.getDesiredCovers();
                 const peers = this.isEnemy ? enemies : allies;
+                
+                // Priority: Non-advancing soldiers should always try to man an empty turret first
+                if (!this.isAdvancing) {
+                    const backCovers = this.isEnemy ? enemyCoversBack : allyCoversBack;
+                    
+                    // Check if a friendly is already manning (or heading to) ANY turret on this side
+                    let friendlyOnTurret = backCovers.some(c => {
+                        if (!c.isTurret) return false;
+                        if (c.turret.user && !c.turret.user.dead && (this.isEnemy ? c.turret.user.isEnemy : !c.turret.user.isEnemy)) return true;
+                        if (peers.some(p => p !== this && !p.dead && p.targetCover === c)) return true;
+                        return false;
+                    });
+
+                    if (!friendlyOnTurret) {
+                        let emptyTurrets = backCovers.filter(c => {
+                            if (!c.isTurret) return false;
+                            if (c.turret.user && c.turret.user !== this && !c.turret.user.dead) return false; // In use by player or other AI
+                            if (peers.some(p => p !== this && !p.dead && p.targetCover === c)) return false; // Claimed by another AI heading towards it
+                            return true;
+                        });
+                        
+                        if (emptyTurrets.length > 0) {
+                            let safeTurrets = emptyTurrets;
+                            if (isSpawning) {
+                                let hiddenTurrets = emptyTurrets.filter(c => !isSpotVisibleToPlayer(c));
+                                if (hiddenTurrets.length > 0) safeTurrets = hiddenTurrets;
+                            }
+                            this.targetCover = safeTurrets[Math.floor(Math.random() * safeTurrets.length)];
+                            this.trenchLevel = 'back';
+                            this.coverTier = 0;
+                            return;
+                        }
+                    }
+                }
+
+                let covers = this.getDesiredCovers();
                 
                 // Exclude covers taken by alive peers, AND turrets currently occupied by ANYONE
                 let available = covers.filter(c => {
@@ -1922,8 +2022,9 @@
                 
                 if (target.isPlayer) {
                     const base = playerRoot.position.clone();
-                    pointsToCheck.push(base.clone().add(new THREE.Vector3(0, isCrouched ? 0.8 : 1.5, 0))); 
-                    pointsToCheck.push(base.clone().add(new THREE.Vector3(0, isCrouched ? 0.4 : 1.0, 0))); 
+                    const pProne = isProne || slideTimer > 0;
+                    pointsToCheck.push(base.clone().add(new THREE.Vector3(0, pProne ? 0.3 : (isCrouched ? 0.8 : 1.5), 0))); 
+                    pointsToCheck.push(base.clone().add(new THREE.Vector3(0, pProne ? 0.15 : (isCrouched ? 0.4 : 1.0), 0))); 
                     pointsToCheck.push(base.clone().add(new THREE.Vector3(0, 0.2, 0)));                    
                 } else {
                     const base = target.mesh.position.clone();
@@ -2070,7 +2171,7 @@
                 let closestPt = new THREE.Vector3();
                 hitPool.forEach(t => {
                     if (!t.dead) {
-                        const posOffset = t.isPlayer ? (isCrouched ? 0.4 : 1.0) : (1.0 - (t.crouchT * 0.45));
+                        const posOffset = t.isPlayer ? ((isProne || slideTimer > 0) ? 0.15 : (isCrouched ? 0.4 : 1.0)) : (1.0 - (t.crouchT * 0.45));
                         const pos = t.isPlayer ? playerRoot.position.clone() : t.mesh.position.clone(); pos.y += posOffset;
                         
                         bulletRay.closestPointToPoint(pos, closestPt);
@@ -2187,7 +2288,8 @@
                 let canMount = false;
                 if (!mountedTurret) {
                     turrets.forEach(t => {
-                        if (!t.user && playerRoot.position.distanceTo(t.mesh.position) < 3.0) canMount = true;
+                        const canClaim = !t.user || (t.user && !t.user.isEnemy && t.user !== playerAI);
+                        if (canClaim && playerRoot.position.distanceTo(t.mesh.position) < 3.0) canMount = true;
                     });
                 }
                 
@@ -2211,9 +2313,16 @@
                 let targetBoltPosZ = -0.05;
 
                 const isMovingInput = (keys.w || keys.s || keys.a || keys.d) && document.pointerLockElement && !mountedTurret;
-                if (isMovingInput && !isAiming) {
+                
+                if (slideTimer > 0 && !isAiming) {
+                    targetWeaponRotX -= 0.15; // Dip weapon
+                    targetWeaponRotZ += 0.15; // Tilt weapon sideways
+                    bobOffsetX = Math.cos(bobTime) * 0.01;
+                    bobOffsetY = Math.sin(bobTime) * 0.01;
+                } else if (isMovingInput && !isAiming) {
                     let moveMult = 1.0;
-                    if (isCrouched) moveMult = keys.shift ? 1.5 : 0.5; 
+                    if (isProne) moveMult = 0.3;
+                    else if (isCrouched) moveMult = keys.shift ? 1.5 : 0.5; 
                     else if (keys.shift) moveMult = 2.5; 
                     
                     // Figure-8 motion for position
@@ -2302,13 +2411,14 @@
                     leanObject.position.x = resolvedLocalVec.x;
                     leanObject.position.z = resolvedLocalVec.z; 
 
-                    const targetEyeY = isCrouched ? 0.8 : 1.5; 
+                    const effProne = isProne || slideTimer > 0;
+                    const targetEyeY = effProne ? 0.3 : (isCrouched ? 0.8 : 1.5); 
                     leanObject.position.y += (targetEyeY - leanObject.position.y) * 10 * dt;
                     
                     pitchObject.position.z += (0 - pitchObject.position.z) * 15 * dt; // Reset Z when unmounted
                     
-                    playerAI.mesh.scale.y = isCrouched ? 0.5 : 1.0; 
-                    playerAI.mesh.position.y = isCrouched ? 0.45 : 0.9; 
+                    playerAI.mesh.scale.y = effProne ? 0.2 : (isCrouched ? 0.5 : 1.0); 
+                    playerAI.mesh.position.y = effProne ? 0.18 : (isCrouched ? 0.45 : 0.9); 
                     playerAI.mesh.position.x = leanObject.position.x; 
                     playerAI.mesh.position.z = leanObject.position.z; 
 
@@ -2317,14 +2427,23 @@
                     if (moveDir.lengthSq() > 0) moveDir.normalize(); moveDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
 
                     let speed = 5; let bobSpeed = 8; let bobAmp = 0.05;
-                    if (isCrouched) {
+                    let slideVelocity = new THREE.Vector3(0,0,0);
+                    
+                    if (slideTimer > 0) {
+                        slideTimer -= dt;
+                        slideSpeed = Math.max(0, slideSpeed - 20 * dt); // Friction decay
+                        slideVelocity.copy(slideDir).multiplyScalar(slideSpeed * dt);
+                        speed = 1.5; bobSpeed = 0; bobAmp = 0; // Much lower steering control while sliding
+                    } else if (isProne) {
+                        speed = 1.125; bobSpeed = 4; bobAmp = 0.015; // Speed cut to 75% of previous (1.5)
+                    } else if (isCrouched) {
                         if (keys.shift && !isAiming) { speed = 6.5; bobSpeed = 10; bobAmp = 0.035; } // Crouch sprint
                         else { speed = 3; bobSpeed = 6; bobAmp = 0.02; } // Crouch walk
                     } else {
                         if (keys.shift && !isAiming) { speed = 8; bobSpeed = 12; bobAmp = 0.05; } // Stand sprint
                         else { speed = 5; bobSpeed = 8; bobAmp = 0.05; } // Stand walk
                     }
-                    const velocity = moveDir.multiplyScalar(speed * dt);
+                    const velocity = moveDir.multiplyScalar(speed * dt).add(slideVelocity);
 
                     if (moveDir.lengthSq() > 0 && document.pointerLockElement) {
                         bobTime += dt * bobSpeed; 
