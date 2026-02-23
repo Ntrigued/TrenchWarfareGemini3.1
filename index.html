@@ -374,11 +374,11 @@
             const camPos = camera.getWorldPosition(new THREE.Vector3());
             const dist = camPos.distanceTo(pos);
             
-            // STRICT PROXIMITY CHECK: Only play localized real sounds within 25 meters
+            // STRICT PROXIMITY CHECK: Play localized real sounds up to 25 meters
             if (dist > 25) return; 
             
-            // Exponential drop-off for realistic sound attenuation
-            let vol = Math.exp(-dist * 0.12);
+            // Inverse distance drop-off: sharp drop after a few feet, long quiet tail
+            let vol = 2.0 / (2.0 + dist);
             
             if (type === 'impact') {
                 // High pitch snap/thud for nearby bullet impacts
@@ -387,8 +387,8 @@
                 // Explosive impact sound with same quadratic drop-off
                 playSoundFile('artillery', 1.2 + Math.random() * 0.3, vol * 1.5);
             } else {
-                // Standard local muzzle gunshot
-                playSoundFile('gunshot', 0.9 + Math.random() * 0.2, vol * 0.7);
+                // Standard local muzzle gunshot (Reduced max volume to 75%: 0.7 -> 0.525)
+                playSoundFile('gunshot', 0.9 + Math.random() * 0.2, vol * 0.525);
             }
         }
 
@@ -418,8 +418,8 @@
 
             // Frequent but heavily muted ambient gunshots
             setInterval(() => {
-                // Increased volume to 0.15 and significantly lowered pitch for a deeper, bassier rumble
-                if (Math.random() > 0.3) playSoundFile('gunshot', 0.25 + Math.random() * 0.2, 0.15, true);
+                // Increased volume to 0.15 and significantly lowered pitch for a deeper, bassier rumble (Reduced max volume to 75%: 0.15 -> 0.1125)
+                if (Math.random() > 0.3) playSoundFile('gunshot', 0.25 + Math.random() * 0.2, 0.1125, true);
             }, 150);
         }
 
@@ -620,28 +620,63 @@
                 this.swivel.add(this.pitchGroup);
                 
                 // Shrink receiver box so it doesn't block the screen
-                const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.15, 0.4), new THREE.MeshLambertMaterial({color: 0x1a1a1a}));
+                const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.5), new THREE.MeshLambertMaterial({color: 0x1a1a1a}));
                 this.pitchGroup.add(receiver);
                 
-                const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 1.0, 8), new THREE.MeshLambertMaterial({color: 0x111111}));
+                // Thick water-cooled jacket
+                const waterJacket = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.8, 12), new THREE.MeshLambertMaterial({color: 0x2a2a2a}));
+                waterJacket.rotation.x = Math.PI / 2;
+                waterJacket.position.set(0, 0, -0.65);
+                this.pitchGroup.add(waterJacket);
+
+                // Muzzle tip
+                const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.2, 8), new THREE.MeshLambertMaterial({color: 0x111111}));
                 barrel.rotation.x = Math.PI / 2;
-                barrel.position.z = -0.5;
+                barrel.position.z = -1.15;
                 this.pitchGroup.add(barrel);
 
-                // Lower shield so we can actually see over it when aiming
-                const shield = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.5, 0.05), new THREE.MeshLambertMaterial({color: 0x3a4530}));
-                shield.position.set(0, -0.15, -0.2);
-                this.pitchGroup.add(shield);
+                // Spade grips
+                const gripBar = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.02, 0.02), new THREE.MeshLambertMaterial({color: 0x111111}));
+                gripBar.position.set(0, 0, 0.26);
+                const lGrip = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.1), new THREE.MeshLambertMaterial({color: 0x3a2e15}));
+                lGrip.rotation.x = Math.PI/2; lGrip.position.set(-0.09, 0, 0.3);
+                const rGrip = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.1), new THREE.MeshLambertMaterial({color: 0x3a2e15}));
+                rGrip.rotation.x = Math.PI/2; rGrip.position.set(0.09, 0, 0.3);
+                const triggerThumb = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.02, 0.02), new THREE.MeshLambertMaterial({color: 0x555555}));
+                triggerThumb.position.set(0, 0, 0.28);
+                this.pitchGroup.add(gripBar, lGrip, rGrip, triggerThumb);
+
+                // Ammo box (left side)
+                const ammoBox = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.2, 0.25), new THREE.MeshLambertMaterial({color: 0x3a4530}));
+                ammoBox.position.set(-0.18, -0.05, 0);
+                this.pitchGroup.add(ammoBox);
+
+                // Bullet belt feeding in
+                for(let b=0; b<4; b++) {
+                    let bullet = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.04, 6), new THREE.MeshLambertMaterial({color: 0xccaa44}));
+                    bullet.rotation.z = Math.PI/2;
+                    bullet.position.set(-0.12 + (b * 0.02), 0.05, 0);
+                    this.pitchGroup.add(bullet);
+                }
+
+                // Advanced Shield with viewport cutout
+                const shieldL = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.5, 0.05), new THREE.MeshLambertMaterial({color: 0x3a4530}));
+                shieldL.position.set(-0.25, -0.15, -0.2);
+                const shieldR = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.5, 0.05), new THREE.MeshLambertMaterial({color: 0x3a4530}));
+                shieldR.position.set(0.25, -0.15, -0.2);
+                const shieldB = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.2, 0.05), new THREE.MeshLambertMaterial({color: 0x3a4530}));
+                shieldB.position.set(0, -0.3, -0.2);
+                this.pitchGroup.add(shieldL, shieldR, shieldB);
                 
                 // Adjust iron sights closer to the new receiver top
                 const tRSightBase = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.02, 0.04), new THREE.MeshLambertMaterial({ color: 0x111111 }));
-                tRSightBase.position.set(0, 0.08, 0.15);
+                tRSightBase.position.set(0, 0.11, 0.15);
                 const tRSightL = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.04, 0.04), new THREE.MeshLambertMaterial({ color: 0x111111 }));
-                tRSightL.position.set(-0.04, 0.11, 0.15);
+                tRSightL.position.set(-0.04, 0.14, 0.15);
                 const tRSightR = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.04, 0.04), new THREE.MeshLambertMaterial({ color: 0x111111 }));
-                tRSightR.position.set(0.04, 0.11, 0.15);
-                const tFSight = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.06, 0.02), new THREE.MeshLambertMaterial({ color: 0x111111 }));
-                tFSight.position.set(0, 0.09, -0.95);
+                tRSightR.position.set(0.04, 0.14, 0.15);
+                const tFSight = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.08, 0.02), new THREE.MeshLambertMaterial({ color: 0x111111 }));
+                tFSight.position.set(0, 0.12, -1.0);
                 this.pitchGroup.add(tRSightBase, tRSightL, tRSightR, tFSight);
                 
                 // Dummy Shell for Reload Animation
@@ -653,7 +688,7 @@
                 scene.add(this.mesh);
                 
                 // Add all main turret parts to worldMeshes so they intercept bullets and block AI Line of Sight
-                worldMeshes.push(base, shield, receiver, barrel); 
+                worldMeshes.push(base, shieldL, shieldR, shieldB, receiver, waterJacket, ammoBox); 
                 
                 // Add physical movement block so players and AI can't walk through the turret base
                 collisionObstacles.push({ minX: x - 0.5, maxX: x + 0.5, minZ: z - 0.5, maxZ: z + 0.5 });
@@ -672,9 +707,10 @@
         }
 
         function buildElevatedWallAndCovers(zPos, isEnemy) {
-            // Pick 1 left block (0 or 1) and 1 right block (3 or 4) to ensure they are on opposite sides
-            const leftBlock = Math.random() > 0.5 ? 0 : 1;
-            const rightBlock = Math.random() > 0.5 ? 3 : 4;
+            // Pick blocks 1 and 3 to guarantee the turrets spawn within the center 75% of the trench width
+            // (Avoiding blocks 0 and 4 which sit on the far outer edges)
+            const leftBlock = 1;
+            const rightBlock = 3;
             const turretBlocks = [leftBlock, rightBlock];
             
             // Pick a random window (odd count index) for those chosen blocks
@@ -860,14 +896,17 @@
         let sniperRechamberStartTime = 0;
 
         const modelRifle = new THREE.Group();
-        const rBarrel = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.015, 0.8, 8), new THREE.MeshLambertMaterial({ color: 0x222222 })); rBarrel.rotation.x = Math.PI / 2; rBarrel.position.set(0, 0, -0.4);
+        const rBarrel = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.015, 0.9, 8), new THREE.MeshLambertMaterial({ color: 0x222222 })); rBarrel.rotation.x = Math.PI / 2; rBarrel.position.set(0, 0, -0.45);
         const rReceiver = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.06, 0.25), new THREE.MeshLambertMaterial({ color: 0x1a1a1a })); rReceiver.position.set(0, 0.01, -0.15);
         const rStock = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.12, 0.4), new THREE.MeshLambertMaterial({ color: 0x4a2e15 })); rStock.position.set(0, -0.03, 0.1);
-        const rFSight = new THREE.Mesh(new THREE.BoxGeometry(0.005, 0.04, 0.01), new THREE.MeshLambertMaterial({ color: 0x111111 })); rFSight.position.set(0, 0.04, -0.75); 
-        const rRSightBase = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.02, 0.02), new THREE.MeshLambertMaterial({ color: 0x111111 })); rRSightBase.position.set(0, 0.03, -0.2); 
-        const rRSightL = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.02, 0.02), new THREE.MeshLambertMaterial({ color: 0x111111 })); rRSightL.position.set(-0.015, 0.05, -0.2); 
-        const rRSightR = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.02, 0.02), new THREE.MeshLambertMaterial({ color: 0x111111 })); rRSightR.position.set(0.015, 0.05, -0.2); 
-        modelRifle.add(rBarrel, rReceiver, rStock, rFSight, rRSightBase, rRSightL, rRSightR);
+        const rHandguard = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.04, 0.5), new THREE.MeshLambertMaterial({ color: 0x4a2e15 })); rHandguard.position.set(0, -0.01, -0.4);
+        const rTriggerGuard = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.04, 0.08), new THREE.MeshLambertMaterial({ color: 0x111111 })); rTriggerGuard.position.set(0, -0.06, -0.05);
+        const rBoltHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.04), new THREE.MeshLambertMaterial({ color: 0x333333 })); rBoltHandle.rotation.z = Math.PI/2; rBoltHandle.position.set(0.025, 0.02, -0.1);
+        const rFSight = new THREE.Mesh(new THREE.BoxGeometry(0.005, 0.04, 0.01), new THREE.MeshLambertMaterial({ color: 0x111111 })); rFSight.position.set(0, 0.04, -0.85); 
+        const rRSightBase = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.02, 0.04), new THREE.MeshLambertMaterial({ color: 0x111111 })); rRSightBase.position.set(0, 0.03, -0.25); 
+        const rRSightL = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.02, 0.02), new THREE.MeshLambertMaterial({ color: 0x111111 })); rRSightL.position.set(-0.015, 0.05, -0.25); 
+        const rRSightR = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.02, 0.02), new THREE.MeshLambertMaterial({ color: 0x111111 })); rRSightR.position.set(0.015, 0.05, -0.25); 
+        modelRifle.add(rBarrel, rReceiver, rStock, rHandguard, rTriggerGuard, rBoltHandle, rFSight, rRSightBase, rRSightL, rRSightR);
 
         const modelMG = new THREE.Group();
         const mgBarrel = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.02, 0.9, 8), new THREE.MeshLambertMaterial({ color: 0x1a1a1a })); mgBarrel.rotation.x = Math.PI / 2; mgBarrel.position.set(0, 0, -0.45);
@@ -885,8 +924,18 @@
         const snBarrel = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.015, 1.2, 8), new THREE.MeshLambertMaterial({ color: 0x222222 })); snBarrel.rotation.x = Math.PI / 2; snBarrel.position.set(0, 0, -0.6);
         const snReceiver = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.05, 0.3), new THREE.MeshLambertMaterial({ color: 0x1a1a1a })); snReceiver.position.set(0, 0, -0.15);
         const snStock = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.1, 0.5), new THREE.MeshLambertMaterial({ color: 0x4a2e15 })); snStock.position.set(0, -0.03, 0.15);
-        const snScope = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.3, 12), new THREE.MeshLambertMaterial({ color: 0x111111 })); snScope.rotation.x = Math.PI / 2; snScope.position.set(0, 0.06, -0.15);
+        const snHandguard = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.04, 0.6), new THREE.MeshLambertMaterial({ color: 0x4a2e15 })); snHandguard.position.set(0, -0.01, -0.45);
+        const snTriggerGuard = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.03, 0.06), new THREE.MeshLambertMaterial({ color: 0x111111 })); snTriggerGuard.position.set(0, -0.05, -0.05);
         
+        // Scope Assembly
+        const snScopeTube = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.35, 12), new THREE.MeshLambertMaterial({ color: 0x111111 })); snScopeTube.rotation.x = Math.PI / 2; snScopeTube.position.set(0, 0.06, -0.15);
+        const snScopeObj = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.08, 12), new THREE.MeshLambertMaterial({ color: 0x111111 })); snScopeObj.rotation.x = Math.PI / 2; snScopeObj.position.set(0, 0.06, -0.32);
+        const snScopeEye = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.06, 12), new THREE.MeshLambertMaterial({ color: 0x111111 })); snScopeEye.rotation.x = Math.PI / 2; snScopeEye.position.set(0, 0.06, 0.02);
+        const snScopeKnobT = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.02, 8), new THREE.MeshLambertMaterial({ color: 0x222222 })); snScopeKnobT.position.set(0, 0.08, -0.15);
+        const snScopeKnobR = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.02, 8), new THREE.MeshLambertMaterial({ color: 0x222222 })); snScopeKnobR.rotation.z = Math.PI/2; snScopeKnobR.position.set(0.02, 0.06, -0.15);
+        const snScopeMount1 = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.04, 0.01), new THREE.MeshLambertMaterial({ color: 0x111111 })); snScopeMount1.position.set(0, 0.04, -0.05);
+        const snScopeMount2 = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.04, 0.01), new THREE.MeshLambertMaterial({ color: 0x111111 })); snScopeMount2.position.set(0, 0.04, -0.25);
+
         // Assemble the Bolt Action parts
         snBoltGroup = new THREE.Group();
         snBoltGroup.position.set(0, 0.015, -0.05); 
@@ -895,7 +944,7 @@
         const snBoltKnob = new THREE.Mesh(new THREE.SphereGeometry(0.008, 8, 8), new THREE.MeshLambertMaterial({ color: 0x111111 })); snBoltKnob.position.set(0.06, 0, 0.07); 
         snBoltGroup.add(snBoltBody, snBoltHandle, snBoltKnob);
         
-        modelSniper.add(snBarrel, snReceiver, snStock, snScope, snBoltGroup);
+        modelSniper.add(snBarrel, snReceiver, snStock, snHandguard, snTriggerGuard, snScopeTube, snScopeObj, snScopeEye, snScopeKnobT, snScopeKnobR, snScopeMount1, snScopeMount2, snBoltGroup);
 
         weaponContainer.add(modelRifle, modelMG, modelSniper); modelMG.visible = false; modelSniper.visible = false;
 
@@ -1023,7 +1072,15 @@
             if (!initialized) { initAudio(); startAmbientBattle(); initialized = true; }
             playerHp = 10; playerAI.dead = false; document.getElementById('healthbar').style.width = '100%'; document.getElementById('hurt-overlay').style.opacity = 0;
             document.getElementById('hurt-overlay').style.background = 'red'; document.getElementById('victory-screen').style.display = 'none';
-            playerRoot.position.set(0, getTerrainHeight(0, -20), -20); yaw = 0; pitch = 0; isCrouched = false; isProne = false; slideTimer = 0; mgHeat = 0; mgOverheated = false;
+            
+            // Randomize player spawn (Center 2/3 of map, either in trench or on parapet)
+            const spawnX = (Math.random() - 0.5) * 132; 
+            let spawnZ = Math.random() > 0.5 ? (-21 + Math.random() * 3) : (-34 + Math.random() * 6);
+            let spawnPos2D = { x: spawnX, z: spawnZ };
+            resolveObstacles(spawnPos2D, 0.4); // Push out of any intersecting cover boxes
+            
+            playerRoot.position.set(spawnPos2D.x, getTerrainHeight(spawnPos2D.x, spawnPos2D.z), spawnPos2D.z); 
+            yaw = Math.PI; pitch = 0; isCrouched = false; isProne = false; slideTimer = 0; mgHeat = 0; mgOverheated = false;
             qToggled = false; eToggled = false;
             
             playerKills = 0;
@@ -1437,7 +1494,8 @@
                 this.torso = new THREE.Group(); this.torso.position.y = 0.3; this.bodyRoot.add(this.torso);
 
                 const torsoMesh = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.6, 0.25), uniformMat); torsoMesh.userData.ai = this; this.torso.add(torsoMesh);
-                const backpack = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.4, 0.15), new THREE.MeshLambertMaterial({ color: 0x4a3a2a })); backpack.position.set(0, 0, 0.2); backpack.userData.ai = this; this.torso.add(backpack);
+                
+                // --- REMOVED BACKPACK ---
 
                 this.headGroup = new THREE.Group(); this.headGroup.position.y = 0.35; this.torso.add(this.headGroup);
                 const head = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.25, 0.2), skinMat); head.position.y = 0.125; head.name = "head"; head.userData.ai = this;
@@ -1454,14 +1512,25 @@
                 this.headGroup.add(head, helmet, lEye, rEye, mustache, mouth);
 
                 this.leftArm = new THREE.Group(); this.leftArm.position.set(-0.25, 0.2, 0); this.torso.add(this.leftArm);
-                const lArmMesh = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.5, 0.12), uniformMat); lArmMesh.position.y = -0.2; lArmMesh.userData.ai = this; this.leftArm.add(lArmMesh);
-                this.rightArm = new THREE.Group(); this.rightArm.position.set(0.25, 0.2, 0); this.torso.add(this.rightArm);
-                const rArmMesh = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.5, 0.12), uniformMat); rArmMesh.position.y = -0.2; rArmMesh.userData.ai = this; this.rightArm.add(rArmMesh);
+                const lUArmMesh = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.28, 0.12), uniformMat); lUArmMesh.position.y = -0.14; lUArmMesh.userData.ai = this; this.leftArm.add(lUArmMesh);
+                this.leftForearm = new THREE.Group(); this.leftForearm.position.set(0, -0.28, 0); this.leftArm.add(this.leftForearm);
+                const lLArmMesh = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.25, 0.1), uniformMat); lLArmMesh.position.y = -0.125; lLArmMesh.userData.ai = this; this.leftForearm.add(lLArmMesh);
+                const lHand = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.12, 0.08), skinMat); lHand.position.set(0, -0.3, 0); this.leftForearm.add(lHand);
 
-                const aiGun = new THREE.Group();
-                const gunBody = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.08, 0.6), new THREE.MeshLambertMaterial({color: 0x222222}));
-                const gunWood = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.06, 0.4), new THREE.MeshLambertMaterial({color: 0x4a2e15})); gunWood.position.z = 0.1;
-                aiGun.add(gunBody, gunWood); aiGun.position.set(-0.05, -0.35, -0.2); this.rightArm.add(aiGun);
+                this.rightArm = new THREE.Group(); this.rightArm.position.set(0.25, 0.2, 0); this.torso.add(this.rightArm);
+                const rUArmMesh = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.28, 0.12), uniformMat); rUArmMesh.position.y = -0.14; rUArmMesh.userData.ai = this; this.rightArm.add(rUArmMesh);
+                this.rightForearm = new THREE.Group(); this.rightForearm.position.set(0, -0.28, 0); this.rightArm.add(this.rightForearm);
+                const rLArmMesh = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.25, 0.1), uniformMat); rLArmMesh.position.y = -0.125; rLArmMesh.userData.ai = this; this.rightForearm.add(rLArmMesh);
+                const rHand = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.12, 0.08), skinMat); rHand.position.set(0, -0.3, 0); this.rightForearm.add(rHand);
+
+                this.weaponGroup = new THREE.Group();
+                const aiBarrel = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.015, 0.9, 8), new THREE.MeshLambertMaterial({color: 0x222222})); aiBarrel.rotation.x = Math.PI/2; aiBarrel.position.set(0, 0, 0.45);
+                const aiReceiver = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.06, 0.25), new THREE.MeshLambertMaterial({color: 0x1a1a1a})); aiReceiver.position.set(0, 0.01, 0.15);
+                const aiStock = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.12, 0.4), new THREE.MeshLambertMaterial({color: 0x4a2e15})); aiStock.position.set(0, -0.03, -0.1);
+                const aiHandguard = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.04, 0.5), new THREE.MeshLambertMaterial({color: 0x4a2e15})); aiHandguard.position.set(0, -0.01, 0.4);
+                const aiBolt = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.04), new THREE.MeshLambertMaterial({color: 0x333333})); aiBolt.rotation.z = Math.PI/2; aiBolt.position.set(0.025, 0.02, 0.1);
+                this.weaponGroup.add(aiBarrel, aiReceiver, aiStock, aiHandguard, aiBolt);
+                this.torso.add(this.weaponGroup);
 
                 this.leftLeg = new THREE.Group(); this.leftLeg.position.set(-0.12, 0, 0); this.bodyRoot.add(this.leftLeg);
                 const lThighMesh = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.4, 0.15), uniformMat); lThighMesh.position.y = -0.2; lThighMesh.userData.ai = this; this.leftLeg.add(lThighMesh);
@@ -1662,6 +1731,13 @@
                         this.rightArm.rotation.z += (0.2 - this.rightArm.rotation.z) * 10 * dt;
                         this.leftArm.rotation.z += (-0.2 - this.leftArm.rotation.z) * 10 * dt;
                         this.leftArm.rotation.y += (0 - this.leftArm.rotation.y) * 10 * dt;
+
+                        this.rightForearm.rotation.x += (0 - this.rightForearm.rotation.x) * 10 * dt;
+                        this.leftForearm.rotation.x += (0 - this.leftForearm.rotation.x) * 10 * dt;
+                        
+                        // Drop weapon to the ground slightly relative to the torso
+                        this.weaponGroup.position.lerp(new THREE.Vector3(0.2, -0.4, 0.1), 10 * dt);
+                        this.weaponGroup.rotation.x += (Math.PI/2 - this.weaponGroup.rotation.x) * 10 * dt;
                         
                         // Straighten legs out
                         this.leftLeg.rotation.x += (0 - this.leftLeg.rotation.x) * 10 * dt;
@@ -1974,9 +2050,42 @@
                 this.leftLeg.rotation.x = squatThighRot + legSwing; this.leftCalf.rotation.x = squatCalfRot; if (legSwing < 0) this.leftCalf.rotation.x += legSwing * -0.5;
                 this.rightLeg.rotation.x = squatThighRot - legSwing; this.rightCalf.rotation.x = squatCalfRot; if (legSwing > 0) this.rightCalf.rotation.x += -legSwing * -0.5;
 
-                const aimRotRightX = -Math.PI / 2 + 0.1; const idleRotRightX = (this.crouchT * -0.2) + armSwing; this.rightArm.rotation.x = idleRotRightX + (aimRotRightX - idleRotRightX) * this.aimT;
-                const aimRotLeftX = -Math.PI / 2 + 0.2; const idleRotLeftX = (this.crouchT * -0.2) - armSwing; this.leftArm.rotation.x = idleRotLeftX + (aimRotLeftX - idleRotLeftX) * this.aimT;
-                this.rightArm.rotation.z = 0.15 * this.aimT; this.leftArm.rotation.z = -0.3 * this.aimT; this.leftArm.rotation.y = 0.4 * this.aimT;
+                // --- WEAPON & ARM KINEMATICS ---
+                // Moved idleGunPos Z from 0.2 to 0.35 to prevent clipping into the chest
+                const idleGunPos = new THREE.Vector3(0.05, -0.15, 0.35); const idleGunRot = new THREE.Euler(0.4, 0.5, -0.1);
+                const aimGunPos = new THREE.Vector3(0.12, 0.15, -0.05); const aimGunRot = new THREE.Euler(0, 0, 0);
+                
+                this.weaponGroup.position.lerpVectors(idleGunPos, aimGunPos, this.aimT);
+                this.weaponGroup.rotation.set(
+                    idleGunRot.x + (aimGunRot.x - idleGunRot.x) * this.aimT, 
+                    idleGunRot.y + (aimGunRot.y - idleGunRot.y) * this.aimT, 
+                    idleGunRot.z + (aimGunRot.z - idleGunRot.z) * this.aimT
+                );
+                
+                if (this.state === 'moving') { 
+                    this.weaponGroup.position.y += Math.sin(this.walkTime * 2) * 0.02; 
+                    this.weaponGroup.rotation.x += Math.sin(this.walkTime) * 0.05; 
+                }
+
+                const idleRArm = new THREE.Euler(-0.4, -0.2, 0.1); const aimRArm = new THREE.Euler(-1.2, -0.2, 0.3);
+                const idleRForearm = new THREE.Euler(-0.6, 0, 0); const aimRForearm = new THREE.Euler(-2.4, 0, 0);
+
+                const idleLArm = new THREE.Euler(-0.3, 0.4, -0.2); const aimLArm = new THREE.Euler(-1.4, 0.8, 0);
+                const idleLForearm = new THREE.Euler(-1.2, 0, 0); const aimLForearm = new THREE.Euler(-0.2, 0, 0);
+
+                this.rightArm.rotation.set(
+                    idleRArm.x + (aimRArm.x - idleRArm.x) * this.aimT + (armSwing * (1 - this.aimT)), 
+                    idleRArm.y + (aimRArm.y - idleRArm.y) * this.aimT, 
+                    idleRArm.z + (aimRArm.z - idleRArm.z) * this.aimT
+                );
+                this.rightForearm.rotation.x = idleRForearm.x + (aimRForearm.x - idleRForearm.x) * this.aimT;
+
+                this.leftArm.rotation.set(
+                    idleLArm.x + (aimLArm.x - idleLArm.x) * this.aimT - (armSwing * (1 - this.aimT)), 
+                    idleLArm.y + (aimLArm.y - idleLArm.y) * this.aimT, 
+                    idleLArm.z + (aimLArm.z - idleLArm.z) * this.aimT
+                );
+                this.leftForearm.rotation.x = idleLForearm.x + (aimLForearm.x - idleLForearm.x) * this.aimT;
 
                 const peers = this.isEnemy ? enemies : allies;
                 peers.forEach(peer => {
@@ -2110,7 +2219,10 @@
                 if (!this.target || this.target.dead) return;
                 const heightOffset = 1.55 - (this.crouchT * 0.45);
                 const eyeStart = this.mesh.position.clone().add(new THREE.Vector3(0, heightOffset, 0));
-                const visualStart = this.mesh.position.clone().add(new THREE.Vector3(0, heightOffset - 0.2, 0));
+                
+                // Track exact tip of the barrel for accurate visuals
+                this.weaponGroup.updateMatrixWorld(true);
+                const visualStart = new THREE.Vector3(0, 0, 0.9).applyMatrix4(this.weaponGroup.matrixWorld);
 
                 let targetPos = new THREE.Vector3();
                 if (this.target.isPlayer) { camera.getWorldPosition(targetPos); targetPos.y -= 0.2; } 
@@ -2128,8 +2240,10 @@
 
                 showMuzzleFlash(visualStart, dir); raycaster.set(eyeStart, dir);
                 
-                // Play local gunshot sound if the AI is close enough
-                playPositionalSound(visualStart, 'gunshot'); 
+                // Play local gunshot sound every 4th shot to prevent audio from being overpowering
+                if (this.shotsFired % 4 === 0) {
+                    playPositionalSound(visualStart, 'gunshot'); 
+                }
 
                 // Target everyone
                 const hitTargets = [playerAI.mesh, ...allies.map(a => a.mesh), ...enemies.map(e => e.mesh)];
@@ -2488,7 +2602,7 @@
                     
                     // Move the actual camera backwards/upwards relative to the pivot
                     targetCamZ = isAiming ? 0.25 : 0.8; 
-                    targetCamY = isAiming ? 0.105 : 0.35; // 0.105 aligns flawlessly with the iron sights line-of-sight
+                    targetCamY = isAiming ? 0.14 : 0.35; // 0.14 aligns flawlessly to look over the rear sight base and through the notch
                 
                     // Shift the internal camera position to orbit the pivot
                     camera.position.y += (targetCamY - camera.position.y) * 15 * dt;
