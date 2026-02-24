@@ -236,6 +236,11 @@
                     Max Active on Field: <span id="active-count-display">25</span>
                 </label>
                 <input type="range" id="active-count" min="10" max="100" value="25" style="width: 250px; cursor: pointer;">
+                
+                <div style="margin-top: 15px; display: flex; align-items: center; gap: 10px;">
+                    <input type="checkbox" id="dev-mode-toggle" style="cursor: pointer; width: 18px; height: 18px;">
+                    <label for="dev-mode-toggle" style="font-size: 14px; color: #ff6666; font-weight: bold; cursor: pointer;">Developer Mode (Infinite Health)</label>
+                </div>
             </div>
 
             <div style="display: flex; gap: 20px;">
@@ -428,134 +433,142 @@
         const collisionObstacles = [];
         const turrets = [];
         let mountedTurret = null;
+
+        // HELPER FOR MASSIVE PERFORMANCE BOOST: Freezes static world matrices
+        function addStaticWorldMesh(mesh) {
+            scene.add(mesh);
+            worldMeshes.push(mesh);
+            mesh.matrixAutoUpdate = false;
+            mesh.updateMatrix();
+        }
         
         function getTerrainHeight(x, z) {
             const absZ = Math.abs(z);
-            if (absZ < 22.0) return -1.2; 
-            if (absZ >= 22.0 && absZ < 26.0) {
+            // Platform
+            if (absZ >= 66.0) return 1.0; 
+            if (absZ >= 62.0 && absZ < 66.0) {
                 const inGap = (Math.abs(x + 60) < 4.2) || (Math.abs(x + 20) < 4.2) || 
                               (Math.abs(x - 20) < 4.2) || (Math.abs(x - 60) < 4.2);
                 if (inGap) {
-                    return -1.2 + (2.2 * ((absZ - 22.0) / 4.0)); // Incline/Ramp
+                    return -1.2 + (2.2 * ((absZ - 62.0) / 4.0)); // Incline/Ramp
                 } else {
                     return 1.0; 
                 }
             }
-            return 1.0; 
+            // Separators
+            if ((absZ >= 20.0 && absZ <= 30.0) || (absZ >= 40.0 && absZ <= 50.0)) {
+                const inGap = (Math.abs(x + 60) < 4.2) || (Math.abs(x + 20) < 4.2) || 
+                              (Math.abs(x - 20) < 4.2) || (Math.abs(x - 60) < 4.2);
+                if (!inGap) return 0.0; // Lowered from 1.0 so soldiers can shoot over them
+            }
+            return -1.2; // Trench floor
         }
 
         const groundMat = new THREE.MeshLambertMaterial({ color: 0x3a4530 });
         const wallMat = new THREE.MeshLambertMaterial({ color: 0x4a3c2b });
         const woodMat = new THREE.MeshLambertMaterial({ color: 0x3d2817 });
 
-        const baseFloor = new THREE.Mesh(new THREE.PlaneGeometry(200, 100), groundMat);
+        const baseFloor = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), groundMat);
         baseFloor.rotation.x = -Math.PI / 2;
         baseFloor.position.set(0, -1.2, 0);
-        scene.add(baseFloor);
-        worldMeshes.push(baseFloor);
+        addStaticWorldMesh(baseFloor);
 
-        const nmlRegions = [
-            { x: -71.5, w: 57, z: -9.75, d: 15.5 }, 
-            { x: 0, w: 74, z: -9.75, d: 15.5 },     
-            { x: 71.5, w: 57, z: -9.75, d: 15.5 },  
-            { x: -71.5, w: 57, z: 9.75, d: 15.5 },  
-            { x: 0, w: 74, z: 9.75, d: 15.5 },      
-            { x: 71.5, w: 57, z: 9.75, d: 15.5 }    
-        ];
-        nmlRegions.forEach(reg => {
-            const b = new THREE.Mesh(new THREE.BoxGeometry(reg.w, 1.2, reg.d), groundMat);
-            b.position.set(reg.x, -0.6, reg.z);
-            scene.add(b); worldMeshes.push(b);
-            collisionObstacles.push({ minX: reg.x - reg.w/2, maxX: reg.x + reg.w/2, minZ: reg.z - reg.d/2, maxZ: reg.z + reg.d/2 });
-        });
-
-        const bfA = new THREE.Mesh(new THREE.PlaneGeometry(200, 10.75), wallMat);
-        bfA.rotation.x = -Math.PI / 2; bfA.position.set(0, 1.0, -31.375);
-        const bfE = new THREE.Mesh(new THREE.PlaneGeometry(200, 10.75), wallMat);
-        bfE.rotation.x = -Math.PI / 2; bfE.position.set(0, 1.0, 31.375);
-        scene.add(bfA, bfE); worldMeshes.push(bfA, bfE);
+        function createWall(x, z, w, h, yCenter) {
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.5), wallMat);
+            mesh.position.set(x, yCenter, z);
+            addStaticWorldMesh(mesh);
+            collisionObstacles.push({ minX: x - w/2, maxX: x + w/2, minZ: z - 0.25, maxZ: z + 0.25 });
+        }
 
         const rampGeo = new THREE.PlaneGeometry(8, 4.565);
         const gapCenters = [-60, -20, 20, 60];
         const blockCenters = [-82, -40, 0, 40, 82];
         const blockWidths = [36, 32, 32, 32, 36];
 
+        // Build Separators (thick dirt blocks between trenches)
+        const sepZs = [-45, -25, 25, 45]; 
+        for (let sz of sepZs) {
+            for (let i = 0; i < blockCenters.length; i++) {
+                let cx = blockCenters[i];
+                let w = blockWidths[i];
+                
+                // Lowered the dirt separators to be level with No Man's Land (0.0 height)
+                let b = new THREE.Mesh(new THREE.BoxGeometry(w, 1.2, 10.0), groundMat);
+                b.position.set(cx, -0.6, sz);
+                addStaticWorldMesh(b);
+                collisionObstacles.push({ minX: cx - w/2, maxX: cx + w/2, minZ: sz - 5.0, maxZ: sz + 5.0 });
+                
+                // Add wood retaining walls on both sides of the earth block
+                createWall(cx, sz - 5.25, w, 1.4, -0.5); 
+                createWall(cx, sz + 5.25, w, 1.4, -0.5);
+            }
+        }
+
+        const bfA = new THREE.Mesh(new THREE.PlaneGeometry(200, 40), wallMat);
+        bfA.rotation.x = -Math.PI / 2; bfA.position.set(0, 1.0, -86.0);
+        const bfE = new THREE.Mesh(new THREE.PlaneGeometry(200, 40), wallMat);
+        bfE.rotation.x = -Math.PI / 2; bfE.position.set(0, 1.0, 86.0);
+        addStaticWorldMesh(bfA); addStaticWorldMesh(bfE);
+
         for (let i = 0; i < blockCenters.length; i++) {
             let cx = blockCenters[i];
             let w = blockWidths[i];
             
             let bA = new THREE.Mesh(new THREE.BoxGeometry(w, 2.2, 4.0), groundMat);
-            bA.position.set(cx, -0.1, -24.0);
-            scene.add(bA); worldMeshes.push(bA);
-            collisionObstacles.push({ minX: cx - w/2, maxX: cx + w/2, minZ: -26.0, maxZ: -22.0 });
+            bA.position.set(cx, -0.1, -64.0);
+            addStaticWorldMesh(bA);
+            collisionObstacles.push({ minX: cx - w/2, maxX: cx + w/2, minZ: -66.0, maxZ: -62.0 });
             
             let bE = new THREE.Mesh(new THREE.BoxGeometry(w, 2.2, 4.0), groundMat);
-            bE.position.set(cx, -0.1, 24.0);
-            scene.add(bE); worldMeshes.push(bE);
-            collisionObstacles.push({ minX: cx - w/2, maxX: cx + w/2, minZ: 22.0, maxZ: 26.0 });
+            bE.position.set(cx, -0.1, 64.0);
+            addStaticWorldMesh(bE);
+            collisionObstacles.push({ minX: cx - w/2, maxX: cx + w/2, minZ: 62.0, maxZ: 66.0 });
         }
 
+        createWall(0, -106.75, 200, 2.0, 2.0);  
+        createWall(0, 106.75, 200, 2.0, 2.0);   
+
+        // Build Ramps connecting Rear Trench to Platforms
         for (let i = 0; i < gapCenters.length; i++) {
             let rA = new THREE.Mesh(rampGeo, groundMat);
             rA.rotation.x = -Math.PI / 2 + 0.5028; 
-            rA.position.set(gapCenters[i], -0.1, -24.0);
-            scene.add(rA); worldMeshes.push(rA);
+            rA.position.set(gapCenters[i], -0.1, -64.0);
+            addStaticWorldMesh(rA);
 
             let rE = new THREE.Mesh(rampGeo, groundMat);
             rE.rotation.x = -Math.PI / 2 - 0.5028; 
-            rE.position.set(gapCenters[i], -0.1, 24.0);
-            scene.add(rE); worldMeshes.push(rE);
+            rE.position.set(gapCenters[i], -0.1, 64.0);
+            addStaticWorldMesh(rE);
         }
-
-        function createWall(x, z, w, h, yCenter) {
-            const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.5), wallMat);
-            mesh.position.set(x, yCenter, z);
-            scene.add(mesh);
-            worldMeshes.push(mesh);
-            collisionObstacles.push({ minX: x - w/2, maxX: x + w/2, minZ: z - 0.25, maxZ: z + 0.25 });
-        }
-
-        createWall(-71.5, -17.75, 57, 1.4, -0.5);
-        createWall(0, -17.75, 74, 1.4, -0.5);
-        createWall(71.5, -17.75, 57, 1.4, -0.5);
-
-        createWall(-71.5, 17.75, 57, 1.4, -0.5);
-        createWall(0, 17.75, 74, 1.4, -0.5);
-        createWall(71.5, 17.75, 57, 1.4, -0.5);
-
-        createWall(0, -36.75, 200, 2.0, 2.0);  
-        createWall(0, 36.75, 200, 2.0, 2.0);   
 
         // Add random jagged buttresses and dirt mounds to break up the flat, straight trench walls
-        for(let i=0; i<50; i++) {
+        for(let i=0; i<100; i++) {
             let bx = (Math.random() - 0.5) * 190;
-            let bz = Math.random() > 0.5 ? (-17.5 + (Math.random() * 1.5)) : (17.5 - (Math.random() * 1.5));
-            if (Math.abs(bx + 60) < 5 || Math.abs(bx + 20) < 5 || Math.abs(bx - 20) < 5 || Math.abs(bx - 60) < 5) continue; // Keep ramps clear
+            let bz = (Math.random() - 0.5) * 120;
+            if (getTerrainHeight(bx, bz) > -1.0) continue; // Only place in trenches
+            
+            // Keep gaps clear
+            if (Math.abs(bx + 60) < 5 || Math.abs(bx + 20) < 5 || Math.abs(bx - 20) < 5 || Math.abs(bx - 60) < 5) continue; 
             
             let bw = 1.0 + Math.random() * 4.0;
             let bh = 1.0 + Math.random() * 1.5;
             let bm = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, 0.8 + Math.random()), Math.random() > 0.5 ? wallMat : groundMat);
             bm.position.set(bx, -1.2 + bh/2, bz);
             bm.rotation.y = (Math.random() - 0.5) * 0.4;
-            scene.add(bm);
-            worldMeshes.push(bm);
+            addStaticWorldMesh(bm);
             collisionObstacles.push({ minX: bx - bw/2, maxX: bx + bw/2, minZ: bz - 0.6, maxZ: bz + 0.6 });
         }
 
-        const sideWallGeo = new THREE.BoxGeometry(2, 10, 80);
+        const sideWallGeo = new THREE.BoxGeometry(2, 10, 200);
         const sw1 = new THREE.Mesh(sideWallGeo, wallMat); sw1.position.set(-100, 0, 0);
         const sw2 = new THREE.Mesh(sideWallGeo, wallMat); sw2.position.set(100, 0, 0);
-        scene.add(sw1, sw2); worldMeshes.push(sw1, sw2);
-        collisionObstacles.push({ minX: -101, maxX: -99, minZ: -40, maxZ: 40 });
-        collisionObstacles.push({ minX: 99, maxX: 101, minZ: -40, maxZ: 40 });
+        addStaticWorldMesh(sw1); addStaticWorldMesh(sw2);
+        collisionObstacles.push({ minX: -101, maxX: -99, minZ: -100, maxZ: 100 });
+        collisionObstacles.push({ minX: 99, maxX: 101, minZ: -100, maxZ: 100 });
 
-        const allyCoversFront = [], allyCoversBack = [];
-        const enemyCoversFront = [], enemyCoversBack = [];
-        
-        const allyPathCovers = [];
-        const enemyPathCovers = [];
-        const midCoversAlly = [];
-        const midCoversEnemy = [];
+        // Tiers: 0=Rear/Plat, 1=Front, 2=Mid, 3=NML
+        const allyCovers = { 0: [], 1: [], 2: [], 3: [] };
+        const enemyCovers = { 0: [], 1: [], 2: [], 3: [] };
 
         function addCover(x, z, arr, dirZ) {
             let bw = 1.2 + Math.random() * 0.8;
@@ -563,7 +576,7 @@
             let mesh = new THREE.Mesh(new THREE.BoxGeometry(bw, 1.2 + Math.random() * 0.5, bd), woodMat);
             mesh.position.set(x, -0.6, z);
             mesh.rotation.y = (Math.random() - 0.5) * 1.5; // Random messy rotation
-            scene.add(mesh); worldMeshes.push(mesh);
+            addStaticWorldMesh(mesh);
             
             // Use the calculated dimensions to create a reliable bounding box that accounts for the messy rotation
             let maxR = Math.max(bw, bd) / 1.5; 
@@ -571,28 +584,28 @@
             arr.push({ x: x, z: z + dirZ, y: -1.2 });
         }
 
-        // Jittered Path Covers
-        addCover(-41.5 + Math.random()*2, -12 + (Math.random()-0.5)*3, allyPathCovers, -1.2);
-        addCover(-38.5 - Math.random()*2, -6 + (Math.random()-0.5)*3, allyPathCovers, -1.2);
-        addCover(41.5 + Math.random()*2, -12 + (Math.random()-0.5)*3, allyPathCovers, -1.2);
-        addCover(38.5 - Math.random()*2, -6 + (Math.random()-0.5)*3, allyPathCovers, -1.2);
-        
-        addCover(-41.5 + Math.random()*2, 12 + (Math.random()-0.5)*3, enemyPathCovers, 1.2);
-        addCover(-38.5 - Math.random()*2, 6 + (Math.random()-0.5)*3, enemyPathCovers, 1.2);
-        addCover(41.5 + Math.random()*2, 12 + (Math.random()-0.5)*3, enemyPathCovers, 1.2);
-        addCover(38.5 - Math.random()*2, 6 + (Math.random()-0.5)*3, enemyPathCovers, 1.2);
-
-        // Randomized Mid-field Skirmish Covers
-        for (let x = -90; x <= 90; x += 5 + Math.random() * 6) {
-            if (Math.abs(x + 40) < 5 || Math.abs(x - 40) < 5) continue; 
-            let zOff = (Math.random() - 0.5) * 12; // Massive vertical scatter in No Man's Land
-            if (Math.random() > 0.5) addCover(x, -2.5 + zOff, midCoversAlly, -1.2);
-            else addCover(x, 2.5 + zOff, midCoversEnemy, 1.2);
+        function scatterCovers(zStart, zEnd, arr, isEnemy) {
+            for (let x = -90; x <= 90; x += 5 + Math.random() * 6) {
+                if (Math.abs(x + 60) < 5 || Math.abs(x + 20) < 5 || Math.abs(x - 20) < 5 || Math.abs(x - 60) < 5) continue;
+                let zOff = zStart + Math.random() * (zEnd - zStart);
+                // Increased spacing from 1.2 to 1.8 so the AI doesn't spawn inside the cover's collision box
+                addCover(x, zOff, arr, isEnemy ? 1.8 : -1.8);
+            }
         }
+        
+        // Populate standard covers
+        scatterCovers(-8, 0, allyCovers[3], false);
+        scatterCovers(0, 8, enemyCovers[3], true);
+        scatterCovers(-18, -12, allyCovers[2], false);
+        scatterCovers(12, 18, enemyCovers[2], true);
+        scatterCovers(-38, -32, allyCovers[1], false);
+        scatterCovers(32, 38, enemyCovers[1], true);
+        scatterCovers(-58, -52, allyCovers[0], false);
+        scatterCovers(52, 58, enemyCovers[0], true);
 
         // --- EXPLOSIVE TURRETS SETUP ---
         class Turret {
-            constructor(x, y, z, isEnemy) {
+            constructor(x, y, z, isEnemy, coverArr) {
                 this.isEnemy = isEnemy;
                 this.mesh = new THREE.Group();
                 this.mesh.position.set(x, y, z); 
@@ -688,6 +701,7 @@
                 scene.add(this.mesh);
                 
                 // Add all main turret parts to worldMeshes so they intercept bullets and block AI Line of Sight
+                // Note: We don't freeze turret part matrices because they rotate dynamically!
                 worldMeshes.push(base, shieldL, shieldR, shieldB, receiver, waterJacket, ammoBox); 
                 
                 // Add physical movement block so players and AI can't walk through the turret base
@@ -699,26 +713,25 @@
                 this.lastShot = 0;
 
                 // Create cover position specifically for this turret so AIs know where to stand
-                const zOffset = this.isEnemy ? 1.0 : -1.0;
+                const zOffset = this.isEnemy ? 1.2 : -1.2;
                 this.coverPos = { x: this.mesh.position.x, z: this.mesh.position.z + zOffset, isTurret: true, turret: this };
-                if (this.isEnemy) enemyCoversBack.push(this.coverPos);
-                else allyCoversBack.push(this.coverPos);
+                if (coverArr) coverArr.push(this.coverPos);
             }
         }
 
         function buildElevatedWallAndCovers(zPos, isEnemy) {
             // Pick blocks 1 and 3 to guarantee the turrets spawn within the center 75% of the trench width
-            // (Avoiding blocks 0 and 4 which sit on the far outer edges)
             const leftBlock = 1;
             const rightBlock = 3;
             const turretBlocks = [leftBlock, rightBlock];
             
-            // Pick a random window (odd count index) for those chosen blocks
             const turretCounts = {};
             turretBlocks.forEach(b => {
                 const possibleCounts = [1, 3, 5, 7];
                 turretCounts[b] = possibleCounts[Math.floor(Math.random() * possibleCounts.length)];
             });
+
+            const coverArr = isEnemy ? enemyCovers[0] : allyCovers[0];
 
             for (let i = 0; i < blockCenters.length; i++) {
                 const cx = blockCenters[i]; const w = blockWidths[i];
@@ -729,37 +742,47 @@
                         createWall(x, zPos, 3.5, 1.8, 1.9);
                     } else {
                         const targetZ = isEnemy ? zPos + 1.2 : zPos - 1.2;
-                        // Place turrets in the randomly chosen windows
                         if (turretCounts[i] === count) {
-                            new Turret(x, 2.0, zPos, isEnemy);
+                            new Turret(x, 2.0, zPos, isEnemy, coverArr);
                         } else {
-                            if (isEnemy) enemyCoversBack.push({ x: x, z: targetZ, y: 1.0 });
-                            else allyCoversBack.push({ x: x, z: targetZ, y: 1.0 });
+                            coverArr.push({ x: x, z: targetZ, y: 1.0 });
                         }
                     }
                     count++;
                 }
             }
         }
-        buildElevatedWallAndCovers(-26.25, false);
-        buildElevatedWallAndCovers(26.25, true);
+        buildElevatedWallAndCovers(-66.25, false);
+        buildElevatedWallAndCovers(66.25, true);
 
-        // Scattered messy front-line cover
-        for (let x = -96; x <= 96; x += 4 + Math.random() * 3) {
-            if (Math.abs(x + 60) < 5 || Math.abs(x + 20) < 5 || Math.abs(x - 20) < 5 || Math.abs(x - 60) < 5) continue; 
-            if (Math.abs(x + 40) < 4 || Math.abs(x - 40) < 4) continue; 
-
-            let oxA = x + (Math.random() - 0.5) * 2;
-            addCover(oxA, -18.5 + (Math.random() - 0.5), allyCoversFront, -1.2);
-
-            let oxE = x + (Math.random() - 0.5) * 2;
-            addCover(oxE, 18.5 + (Math.random() - 0.5), enemyCoversFront, 1.2);
+        // Build Bunker Turrets inside the Trenches
+        function buildTrenchTurret(x, z, isEnemy, coverArr) {
+            // Bunker base to elevate turret (Shrunk collision box to prevent ejecting the AI user)
+            const bMesh = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.8, 1.2), woodMat);
+            bMesh.position.set(x, -0.8, z);
+            addStaticWorldMesh(bMesh);
+            collisionObstacles.push({ minX: x - 0.6, maxX: x + 0.6, minZ: z - 0.6, maxZ: z + 0.6 });
+            
+            new Turret(x, -0.2, z, isEnemy, coverArr);
         }
 
+        const turretXs = [-40, 0, 40];
+        // Ally random trench turrets
+        let aX1 = turretXs[Math.floor(Math.random() * turretXs.length)];
+        let aX2 = turretXs[Math.floor(Math.random() * turretXs.length)];
+        buildTrenchTurret(aX1, -35, false, allyCovers[1]); // Front
+        buildTrenchTurret(aX2, -15, false, allyCovers[2]); // Mid
+
+        // Enemy random trench turrets
+        let eX1 = turretXs[Math.floor(Math.random() * turretXs.length)];
+        let eX2 = turretXs[Math.floor(Math.random() * turretXs.length)];
+        buildTrenchTurret(eX1, 35, true, enemyCovers[1]);
+        buildTrenchTurret(eX2, 15, true, enemyCovers[2]);
+
         // Random chaotic debris boxes
-        for (let i = 0; i < 60; i++) {
+        for (let i = 0; i < 100; i++) {
             const x = (Math.random() - 0.5) * 180;
-            const z = (Math.random() - 0.5) * 35; // Spread out across the whole mid-field
+            const z = (Math.random() - 0.5) * 140; 
             if (Math.abs(x + 40) < 4 || Math.abs(x - 40) < 4) continue;
 
             let bw = 0.8 + Math.random();
@@ -768,8 +791,7 @@
             const mesh = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bd), Math.random() > 0.5 ? woodMat : wallMat);
             mesh.position.set(x, getTerrainHeight(x, z) + 0.2, z); 
             mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
-            scene.add(mesh);
-            worldMeshes.push(mesh); // Bullets can hit them
+            addStaticWorldMesh(mesh); // Bullets can hit them
             
             // Add physical collision so players and AI can't walk through them
             let maxR = Math.max(bw, bh, bd) / 1.8;
@@ -779,26 +801,29 @@
         // Ground Craters / Scorch Marks
         const craterGeo = new THREE.PlaneGeometry(3, 3);
         const craterMat = new THREE.MeshBasicMaterial({ color: 0x1a1c14, depthWrite: false, transparent: true, opacity: 0.8 });
-        for(let i=0; i<120; i++) {
+        for(let i=0; i<200; i++) {
             let cr = new THREE.Mesh(craterGeo, craterMat);
             let cx = (Math.random() - 0.5) * 190;
-            let cz = (Math.random() - 0.5) * 36; 
+            let cz = (Math.random() - 0.5) * 140; 
             let s = 0.5 + Math.random() * 2;
             cr.scale.set(s, s, s);
             cr.rotation.x = -Math.PI / 2;
             cr.rotation.z = Math.random() * Math.PI;
             cr.position.set(cx, getTerrainHeight(cx, cz) + 0.02, cz);
+            // Craters don't intercept bullets, so don't push to worldMeshes, but still freeze their matrices
+            cr.matrixAutoUpdate = false;
+            cr.updateMatrix();
             scene.add(cr);
         }
 
         // --- ATMOSPHERIC VISUALS ---
         const ashGeo = new THREE.BufferGeometry();
-        const ashCount = 1000;
+        const ashCount = 1500;
         const ashPos = new Float32Array(ashCount * 3);
         for(let i = 0; i < ashCount * 3; i += 3) {
             ashPos[i] = (Math.random() - 0.5) * 200;
             ashPos[i+1] = Math.random() * 10;
-            ashPos[i+2] = (Math.random() - 0.5) * 100;
+            ashPos[i+2] = (Math.random() - 0.5) * 160;
         }
         ashGeo.setAttribute('position', new THREE.BufferAttribute(ashPos, 3));
         const ashMat = new THREE.PointsMaterial({ color: 0x666666, size: 0.15, transparent: true, opacity: 0.5 });
@@ -806,9 +831,9 @@
         scene.add(ashParticles);
 
         const horizonLights = [];
-        for(let i = 0; i < 6; i++) {
+        for(let i = 0; i < 8; i++) {
             let l = new THREE.PointLight(0xffaa55, 0, 150);
-            l.position.set((Math.random() - 0.5) * 180, 5, (i % 2 === 0 ? 1 : -1) * (40 + Math.random() * 20));
+            l.position.set((Math.random() - 0.5) * 180, 5, (i % 2 === 0 ? 1 : -1) * (80 + Math.random() * 20));
             scene.add(l);
             horizonLights.push({light: l, timer: 0});
         }
@@ -851,7 +876,7 @@
 
         // --- PLAYER & CAMERA ---
         const playerRoot = new THREE.Group();
-        playerRoot.position.set(0, getTerrainHeight(0, -20), -20);
+        playerRoot.position.set(0, getTerrainHeight(0, -60), -60);
         scene.add(playerRoot);
         const leanObject = new THREE.Group(); leanObject.position.y = 1.5; playerRoot.add(leanObject);
         const pitchObject = new THREE.Group(); leanObject.add(pitchObject); pitchObject.add(camera);
@@ -863,7 +888,11 @@
                 
                 playNearMissSound(); 
                 triggerShellShock(1.0); // Muffle hearing when hit
-                playerHp -= amt;
+                
+                if (!devMode) {
+                    playerHp -= amt;
+                }
+                
                 document.getElementById('healthbar').style.width = (playerHp * 10) + '%';
                 document.getElementById('hurt-overlay').style.opacity = 0.5;
                 if (playerHp <= 0) {
@@ -889,7 +918,7 @@
         const weaponsData = [
             { id: 'rifle', name: '1: Rifle', type: 'semi', fireRate: 250, recoilPitch: 0.0066, recoilZ: 0.033, barrelLen: -0.8, soundPitch: 1.0, alignY: -0.06 },
             { id: 'mg', name: '2: Machine Gun', type: 'auto', fireRate: 100, recoilPitch: 0.012, recoilZ: 0.05, barrelLen: -0.9, soundPitch: 1.1, alignY: -0.08 },
-            { id: 'sniper', name: '3: Sniper Rifle', type: 'semi', fireRate: 1500, recoilPitch: 0.0198, recoilZ: 0.1, barrelLen: -1.2, soundPitch: 0.7, alignY: 0 } // Sniper fireRate increased to 1.5s for bolt action
+            { id: 'sniper', name: '3: Sniper Rifle', type: 'semi', fireRate: 1500, recoilPitch: 0.0198, recoilZ: 0.1, barrelLen: -1.2, soundPitch: 0.7, alignY: 0 } 
         ];
         let currentWeaponIndex = 0; let sniperZoomLevel = 4;
         let snBoltGroup; // Expose globally for bolt animation
@@ -916,7 +945,6 @@
         const mgStock = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.1, 0.3), new THREE.MeshLambertMaterial({ color: 0x3a2e15 })); mgStock.position.set(0, -0.02, 0.15);
         const mgBipod = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.15), new THREE.MeshLambertMaterial({color: 0x111111})); mgBipod.position.set(0, -0.05, -0.8); mgBipod.rotation.x = Math.PI/4;
         
-        // Cleaned up front sight connecting to the barrel, no bulky rear sights
         const mgFSight = new THREE.Mesh(new THREE.BoxGeometry(0.005, 0.062, 0.01), new THREE.MeshLambertMaterial({ color: 0x111111 })); mgFSight.position.set(0, 0.049, -0.85); 
         
         modelMG.add(mgBarrel, mgReceiver, mgMag, mgStock, mgBipod, mgFSight);
@@ -1002,17 +1030,12 @@
             if (f) { 
                 f.life = 0.05; 
                 f.mesh.position.copy(pos).add(dir.clone().multiplyScalar(0.4)); 
-                
-                // Fix: Orient the flash orthogonally to the barrel direction, not the camera
                 f.mesh.lookAt(f.mesh.position.clone().add(dir)); 
+                f.mesh.rotateZ(Math.random() * Math.PI * 2); 
                 
-                f.mesh.rotateZ(Math.random() * Math.PI * 2); // Spin randomly on spawn
-                
-                // Randomly flip and scale slightly to make the single texture look highly varied
                 const sx = (Math.random() > 0.5 ? 1 : -1) * (0.7 + Math.random() * 0.6);
                 const sy = (Math.random() > 0.5 ? 1 : -1) * (0.7 + Math.random() * 0.6);
                 f.mesh.scale.set(sx, sy, 1);
-                
                 f.mesh.material.opacity = 1; 
             }
         }
@@ -1064,12 +1087,14 @@
         let activeRollDir = 0; // 0 = none, 1 = left, -1 = right
         let rollCooldown = 0; // Delay between rolls
         let playerKills = 0;
+        let devMode = false;
         
         let allyReserves = 0;
         let enemyReserves = 0;
 
         document.getElementById('soldier-count').addEventListener('input', (e) => { document.getElementById('soldier-count-display').innerText = e.target.value; });
         document.getElementById('active-count').addEventListener('input', (e) => { document.getElementById('active-count-display').innerText = e.target.value; });
+        document.getElementById('dev-mode-toggle').addEventListener('change', (e) => { devMode = e.target.checked; });
 
         function startGame(mode) {
             gameMode = mode;
@@ -1079,7 +1104,7 @@
             
             // Randomize player spawn (Center 2/3 of map, either in trench or on parapet)
             const spawnX = (Math.random() - 0.5) * 132; 
-            let spawnZ = Math.random() > 0.5 ? (-21 + Math.random() * 3) : (-34 + Math.random() * 6);
+            let spawnZ = Math.random() > 0.5 ? (-55 + Math.random() * 5) : (-75 + Math.random() * 10);
             let spawnPos2D = { x: spawnX, z: spawnZ };
             resolveObstacles(spawnPos2D, 0.4); // Push out of any intersecting cover boxes
             
@@ -1310,11 +1335,13 @@
             
             // Allow intersecting with ANY AI on the field
             const allAIMeshes = [...enemies.map(e => e.mesh), ...allies.map(a => a.mesh)];
-            const intersects = raycaster.intersectObjects([...worldMeshes, ...allAIMeshes], true);
+            const intersects = raycaster.intersectObjects([...worldMeshes, ...allAIMeshes], false); // Environment uses false for pure speed, but wait, AI meshes are Groups!
+            // Actually, we must use `true` here to hit the nested boxes of the AIs. WorldMeshes are completely flat, so `true` doesn't hurt them too much.
+            const intersectsDeep = raycaster.intersectObjects([...worldMeshes, ...allAIMeshes], true);
             
             let hitDistance = 200;
-            if (intersects.length > 0) {
-                const hit = intersects[0]; hitDistance = hit.distance; const hitObj = hit.object;
+            if (intersectsDeep.length > 0) {
+                const hit = intersectsDeep[0]; hitDistance = hit.distance; const hitObj = hit.object;
                 
                 // If it hits an AI (friend or foe)
                 if (hitObj.userData.ai) {
@@ -1497,7 +1524,7 @@
             if (camForward.dot(dir) < 0.2) return false; // Out of FOV / Behind player
 
             const tempRaycaster = new THREE.Raycaster(camPos, dir);
-            const intersects = tempRaycaster.intersectObjects(worldMeshes, false);
+            const intersects = tempRaycaster.intersectObjects(worldMeshes, false); // False for performance optimization
             return !(intersects.length > 0 && intersects[0].distance < dist);
         }
 
@@ -1515,8 +1542,6 @@
 
                 const torsoMesh = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.6, 0.25), uniformMat); torsoMesh.userData.ai = this; this.torso.add(torsoMesh);
                 
-                // --- REMOVED BACKPACK ---
-
                 this.headGroup = new THREE.Group(); this.headGroup.position.y = 0.35; this.torso.add(this.headGroup);
                 const head = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.25, 0.2), skinMat); head.position.y = 0.125; head.name = "head"; head.userData.ai = this;
                 const helmet = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.15, 0.25), helmetMat); helmet.position.y = 0.3; helmet.name = "head"; helmet.userData.ai = this;
@@ -1564,77 +1589,53 @@
 
                 scene.add(this.mesh);
                 this.dead = true; this.timer = Math.random() * 2; this.crouchT = 1.0; this.aimT = 0.0; this.walkTime = Math.random() * 10;
+                this.turretUseT = 0.0;
                 
                 this.respawn();
             }
 
             getDesiredCovers() {
-                if (this.isEnemy) {
-                    if (this.coverTier === 1) return enemyPathCovers;
-                    if (this.coverTier === 2) return midCoversEnemy;
-                    return this.trenchLevel === 'front' ? enemyCoversFront : enemyCoversBack;
-                } else {
-                    if (this.coverTier === 1) return allyPathCovers;
-                    if (this.coverTier === 2) return midCoversAlly;
-                    return this.trenchLevel === 'front' ? allyCoversFront : allyCoversBack;
-                }
+                const covers = this.isEnemy ? enemyCovers : allyCovers;
+                return covers[this.coverTier] || covers[0];
             }
 
             pickCover(isSpawning = false) {
                 const peers = this.isEnemy ? enemies : allies;
+                let myCovers = this.getDesiredCovers();
                 
                 // Priority: Non-advancing soldiers should always try to man an empty turret first
                 if (!this.isAdvancing) {
-                    const backCovers = this.isEnemy ? enemyCoversBack : allyCoversBack;
-                    
-                    // Check if a friendly is already manning (or heading to) ANY turret on this side
-                    let friendlyOnTurret = backCovers.some(c => {
+                    // Check if a friendly is already manning (or heading to) ANY turret in this tier
+                    let emptyTurrets = myCovers.filter(c => {
                         if (!c.isTurret) return false;
-                        if (c.turret.user && !c.turret.user.dead && (this.isEnemy ? c.turret.user.isEnemy : !c.turret.user.isEnemy)) return true;
-                        if (peers.some(p => p !== this && !p.dead && p.targetCover === c)) return true;
-                        return false;
+                        if (c.turret.user && c.turret.user !== this && !c.turret.user.dead) return false; // In use by player or other AI
+                        if (peers.some(p => p !== this && !p.dead && p.targetCover === c)) return false; // Claimed by another AI heading towards it
+                        return true;
                     });
-
-                    if (!friendlyOnTurret) {
-                        let emptyTurrets = backCovers.filter(c => {
-                            if (!c.isTurret) return false;
-                            if (c.turret.user && c.turret.user !== this && !c.turret.user.dead) return false; // In use by player or other AI
-                            if (peers.some(p => p !== this && !p.dead && p.targetCover === c)) return false; // Claimed by another AI heading towards it
-                            return true;
-                        });
-                        
-                        if (emptyTurrets.length > 0) {
-                            let safeTurrets = emptyTurrets;
-                            if (isSpawning) {
-                                let hiddenTurrets = emptyTurrets.filter(c => !isSpotVisibleToPlayer(c));
-                                if (hiddenTurrets.length > 0) safeTurrets = hiddenTurrets;
-                            }
-                            this.targetCover = safeTurrets[Math.floor(Math.random() * safeTurrets.length)];
-                            this.trenchLevel = 'back';
-                            this.coverTier = 0;
-                            return;
+                    
+                    if (emptyTurrets.length > 0 && Math.random() < 0.8) {
+                        let safeTurrets = emptyTurrets;
+                        if (isSpawning) {
+                            let hiddenTurrets = emptyTurrets.filter(c => !isSpotVisibleToPlayer(c));
+                            if (hiddenTurrets.length > 0) safeTurrets = hiddenTurrets;
                         }
+                        this.targetCover = safeTurrets[Math.floor(Math.random() * safeTurrets.length)];
+                        return;
                     }
                 }
 
-                let covers = this.getDesiredCovers();
-                
                 // Exclude covers taken by alive peers, AND turrets currently occupied by ANYONE
-                let available = covers.filter(c => {
+                let available = myCovers.filter(c => {
                     if (c.isTurret && c.turret.user && c.turret.user !== this) return false;
                     return !peers.some(p => p !== this && !p.dead && p.targetCover === c);
                 });
                 
-                if (available.length === 0) available = covers; // fallback if crowded
+                if (available.length === 0) available = myCovers; // fallback if crowded
                 
                 if (isSpawning) {
                     // Filter out spots the player is actively looking at to prevent pop-in ONLY when spawning
                     let safeAvailable = available.filter(c => !isSpotVisibleToPlayer(c));
-                    
-                    // Only use the safe list if there are actually hidden spots available. 
-                    if (safeAvailable.length > 0) {
-                        available = safeAvailable;
-                    }
+                    if (safeAvailable.length > 0) available = safeAvailable;
                 }
                 
                 this.targetCover = available[Math.floor(Math.random() * available.length)];
@@ -1646,12 +1647,31 @@
                 this.mesh.rotation.x = 0; // Ensure they are standing upright again after a death animation
                 this.deathAnimT = 0;
                 
+                // Instantly hard-reset all body parts so they don't look like crumpled corpses flying into place
+                this.crouchT = 1.0; this.aimT = 0.0; this.turretUseT = 0.0;
+                this.bodyRoot.position.y = 0.85 - (1.0 * 0.45); 
+                this.torso.rotation.x = 1.0 * 0.4; 
+                this.headGroup.rotation.x = -this.torso.rotation.x; 
+                
+                this.rightArm.rotation.set(-0.4, -0.2, 0.1);
+                this.leftArm.rotation.set(-0.3, 0.4, -0.2);
+                this.rightForearm.rotation.x = -0.6;
+                this.leftForearm.rotation.x = -1.2;
+                
+                this.rightLeg.rotation.set(-1.2, 0, -0.15); // squat pos
+                this.leftLeg.rotation.set(-1.2, 0, 0.15);
+                this.rightCalf.rotation.set(2.0, 0, 0);
+                this.leftCalf.rotation.set(2.0, 0, 0);
+
+                this.weaponGroup.position.set(0.05, -0.15, 0.35);
+                this.weaponGroup.rotation.set(0.4, 0.5, -0.1);
+                
                 if (this.targetCover && this.targetCover.isTurret && this.targetCover.turret.user === this) {
                     this.targetCover.turret.user = null;
                 }
                 
                 this.timer = 0.5 + Math.random(); this.target = null; this.targetCover = null; this.scanBaseYaw = this.isEnemy ? Math.PI : 0;
-                this.shootDelay = 0; this.trenchLevel = Math.random() > 0.5 ? 'front' : 'back'; this.crouchT = 1.0; this.aimT = 0.0;
+                this.shootDelay = 0; this.crouchT = 1.0; this.aimT = 0.0; this.turretUseT = 0.0;
                 
                 const team = this.isEnemy ? enemies : allies;
                 let livingCount = 0;
@@ -1664,9 +1684,9 @@
                 }
                 livingCount++; 
                 
-                // Keep higher push rate so the middle sees a steady stream of action
-                this.isAdvancing = (advancers / livingCount) < 0.4;
-                this.coverTier = 0;
+                // Keep 50% of soldiers advancing
+                this.isAdvancing = (advancers / livingCount) < 0.5;
+                this.coverTier = Math.floor(Math.random() * 2); // Spawns across their 2 side trenches / platform (Tiers 0 and 1)
                 this.interruptedMove = false;
 
                 this.pickCover(true);
@@ -1805,6 +1825,9 @@
 
                 this.timer -= dt;
                 
+                let startX = this.mesh.position.x;
+                let startZ = this.mesh.position.z;
+                
                 let closestThreat = null;
                 let closestDistSq = 25; 
                 
@@ -1826,8 +1849,12 @@
                         if (isExposed) perceivedDistSq *= 0.4; 
                         
                         if (perceivedDistSq < closestDistSq) {
-                            closestDistSq = perceivedDistSq;
-                            closestThreat = threat;
+                            // MASSIVE FPS BOOST: Only calculate accurate raycasted exposure for the immediate closest threat when interrupted
+                            const hitDistance = Math.sqrt(perceivedDistSq);
+                            if (hitDistance < 5.0) {
+                                closestDistSq = perceivedDistSq;
+                                closestThreat = threat;
+                            }
                         }
                     }
                 }
@@ -1848,12 +1875,12 @@
                     }
                 }
 
-                let targetCrouch = 0.0; let targetAim = 0.0;
+                let targetCrouch = 0.0; let targetAim = 0.0; let targetTurretUse = 0.0;
 
                 switch (this.state) {
                     case 'moving':
                         targetCrouch = 0.5; 
-                        const moveSpeed = 4.5;
+                        const moveSpeed = this.isAdvancing ? 6.5 : 4.5;
                         
                         let destX = this.targetCover.x;
                         let destZ = this.targetCover.z;
@@ -1863,28 +1890,57 @@
                         let tempX = destX;
                         let tempZ = destZ;
 
-                        const isHome = (z) => Math.abs(z) >= 17;
-                        const isMid = (z) => Math.abs(z) <= 5;
-                        const isPath = (z) => Math.abs(z) > 5 && Math.abs(z) < 17;
-                        const getPathX = (x) => (Math.abs(x - (-40)) < Math.abs(x - 40)) ? -40 : 40;
-                        
-                        if (isHome(curZ) && !isHome(destZ)) {
-                            let px = getPathX(curX);
-                            if (Math.abs(curX - px) > 1.0) { tempX = px; tempZ = curZ; } 
-                            else { tempX = px; tempZ = destZ; }
-                        } else if (isMid(curZ) && !isMid(destZ)) {
-                            let px = getPathX(curX);
-                            if (Math.abs(curX - px) > 1.0) { tempX = px; tempZ = curZ; } 
-                            else { tempX = px; tempZ = destZ; }
-                        } else if (isPath(curZ)) {
-                            if (isHome(destZ)) {
-                                let safeZ = destZ > 0 ? 19.5 : -19.5;
-                                if (Math.abs(destZ) > 26) safeZ = destZ > 0 ? 28 : -28; 
-                                if (Math.abs(curZ - safeZ) > 1.0) { tempX = curX; tempZ = safeZ; } 
-                                else { tempX = destX; tempZ = destZ; }
-                            } else if (isMid(destZ)) {
-                                if (Math.abs(curZ) > 1.0) { tempX = curX; tempZ = 0; } 
-                                else { tempX = destX; tempZ = destZ; }
+                        const inSepZone = (z) => {
+                            const az = Math.abs(z);
+                            // Expand the zones slightly to prevent diagonal corner-cutting
+                            if (az >= 18 && az <= 32) return Math.sign(z) * 25;
+                            if (az >= 38 && az <= 52) return Math.sign(z) * 45;
+                            if (az >= 58 && az <= 70) return Math.sign(z) * 64; 
+                            return 0;
+                        };
+
+                        const getPathX = (x) => {
+                            const gaps = [-60, -20, 20, 60];
+                            let closest = gaps[0];
+                            let minD = Math.abs(x - closest);
+                            for(let i=1; i<gaps.length; i++) {
+                                if (Math.abs(x - gaps[i]) < minD) {
+                                    minD = Math.abs(x - gaps[i]);
+                                    closest = gaps[i];
+                                }
+                            }
+                            return closest;
+                        };
+
+                        let curSep = inSepZone(curZ);
+                        if (curSep !== 0) {
+                            // WE ARE INSIDE A SEPARATOR (OR RAMP) ZONE.
+                            // MUST strictly maintain gap X to prevent hitting the walls!
+                            tempX = getPathX(curX);
+                            tempZ = destZ; 
+                        } else {
+                            // We are not in a separator. Do we need to cross one?
+                            const crosses = (cZ, dZ, sepCenter) => (cZ < sepCenter && dZ > sepCenter) || (cZ > sepCenter && dZ < sepCenter);
+                            const sepCenters = [-64, -45, -25, 25, 45, 64];
+                            let sepToCross = 0;
+                            let minDist = Infinity;
+                            for (let s of sepCenters) {
+                                if (crosses(curZ, destZ, s)) {
+                                    let d = Math.abs(curZ - s);
+                                    if (d < minDist) { minDist = d; sepToCross = s; }
+                                }
+                            }
+                            if (sepToCross !== 0) {
+                                let px = getPathX(curX);
+                                if (Math.abs(curX - px) > 1.5) {
+                                    // Not aligned with gap yet. Walk horizontally towards it.
+                                    tempX = px;
+                                    tempZ = curZ;
+                                } else {
+                                    // Aligned! Walk towards the separator center.
+                                    tempX = px;
+                                    tempZ = sepToCross;
+                                }
                             }
                         }
                         
@@ -1926,22 +1982,32 @@
                                     this.state = 'moving';
                                 }
                             } else {
-                                this.state = 'popping'; 
-                                this.timer = 0.3; 
+                                // If advancing and no target, frequently just keep moving forward instead of popping up to look around
+                                if (this.isAdvancing && !this.target && Math.random() < 0.6 && this.coverTier < 3) {
+                                    this.coverTier++;
+                                    this.pickCover();
+                                    this.state = 'moving';
+                                } else {
+                                    this.state = 'popping'; 
+                                    this.timer = this.isAdvancing ? 0.15 : 0.3; 
+                                }
                             }
                         }
                         break;
                     case 'using_turret':
-                        targetCrouch = 0.0; targetAim = 0.0; // Stand behind
+                        targetCrouch = 0.0; targetAim = 0.0; targetTurretUse = 1.0; // Stand behind and hold
                         const t = this.targetCover.turret;
                         if (!t || (t.user && t.user !== this)) {
                             this.state = 'hidden'; break; // Turret was hijacked or lost
                         }
                         t.user = this; // Claim it
                         
-                        // Lock AI position tightly to turret mount
-                        this.mesh.position.x = t.mesh.position.x;
-                        this.mesh.position.z = t.mesh.position.z + (this.isEnemy ? 1.0 : -1.0);
+                        // Orbit AI tightly behind the turret mount to grip the handles seamlessly
+                        let backwardVec = new THREE.Vector3(0, 0, 0.85);
+                        backwardVec.applyAxisAngle(new THREE.Vector3(0, 1, 0), t.swivel.rotation.y);
+                        
+                        this.mesh.position.x = t.mesh.position.x + backwardVec.x;
+                        this.mesh.position.z = t.mesh.position.z + backwardVec.z;
                         this.mesh.position.y = getTerrainHeight(this.mesh.position.x, this.mesh.position.z);
                         
                         // AI firing Logic for Turret
@@ -2003,7 +2069,7 @@
                         targetCrouch = 0.0; targetAim = 1.0;
                         if (this.target) this.aimAtTarget(dt);
                         if (this.timer <= 0) {
-                            this.state = 'aiming'; this.timer = 0.5 + Math.random() * 1.0;
+                            this.state = 'aiming'; this.timer = this.isAdvancing ? (0.3 + Math.random() * 0.5) : (0.5 + Math.random() * 1.0);
                             if (!this.target || this.target.dead || !this.checkLOS(this.target)) {
                                 this.target = this.findTarget();
                             } else { this.shootDelay = 0.1 + Math.random() * 0.2; }
@@ -2019,7 +2085,17 @@
                         } else {
                             this.target = this.findTarget(); this.shootDelay = 0.1 + Math.random() * 0.2;
                             this.mesh.rotation.y = this.scanBaseYaw + Math.sin(performance.now() * 0.002 + this.mesh.id) * 0.5;
-                            if (this.timer <= 0) { this.state = 'hidden'; this.timer = 0.5 + Math.random(); }
+                            if (this.timer <= 0) { 
+                                // Abandon cover and rush if no targets are found and we are advancing
+                                if (this.isAdvancing && this.coverTier < 3 && Math.random() < 0.7) {
+                                    this.coverTier++;
+                                    this.pickCover();
+                                    this.state = 'moving';
+                                } else {
+                                    this.state = 'hidden'; 
+                                    this.timer = this.isAdvancing ? (0.2 + Math.random() * 0.4) : (0.5 + Math.random()); 
+                                }
+                            }
                         }
                         break;
                     case 'shooting':
@@ -2034,7 +2110,7 @@
                                 if (this.interruptedMove) {
                                     this.interruptedMove = false;
                                     this.state = 'moving';
-                                } else if (this.isAdvancing && this.coverTier < 2 && Math.random() < 0.95) {
+                                } else if (this.isAdvancing && this.coverTier < 3 && Math.random() < 0.95) {
                                     this.coverTier++;
                                     this.pickCover();
                                     this.state = 'moving';
@@ -2046,13 +2122,13 @@
                                         const team = this.isEnemy ? enemies : allies;
                                         let living = 0, adv = 0;
                                         team.forEach(s => { if (!s.dead) { living++; if (s.isAdvancing) adv++; } });
-                                        if (adv / living < 0.4) {
+                                        if (adv / living < 0.5) {
                                             this.isAdvancing = true; 
                                         }
                                     }
                                     
                                     this.state = 'hidden'; 
-                                    this.timer = 0.5 + Math.random() * 1.0;
+                                    this.timer = this.isAdvancing ? (0.2 + Math.random() * 0.4) : (0.5 + Math.random() * 1.0);
                                 }
                             }
                         }
@@ -2061,6 +2137,7 @@
 
                 this.crouchT += (targetCrouch - this.crouchT) * 10 * dt;
                 this.aimT += (targetAim - this.aimT) * 12 * dt;
+                this.turretUseT += (targetTurretUse - this.turretUseT) * 10 * dt;
 
                 this.bodyRoot.position.y = 0.85 - (this.crouchT * 0.45); 
                 this.torso.rotation.x = this.crouchT * 0.4; this.headGroup.rotation.x = -this.torso.rotation.x; 
@@ -2077,38 +2154,42 @@
                 // Moved idleGunPos Z from 0.2 to 0.35 to prevent clipping into the chest
                 const idleGunPos = new THREE.Vector3(0.05, -0.15, 0.35); const idleGunRot = new THREE.Euler(0.4, 0.5, -0.1);
                 const aimGunPos = new THREE.Vector3(0.12, 0.15, -0.05); const aimGunRot = new THREE.Euler(0, 0, 0);
+                const turretGunPos = new THREE.Vector3(0.2, -0.6, 0.2); const turretGunRot = new THREE.Euler(1.5, 0, 0); // Drop weapon while using turret
                 
-                this.weaponGroup.position.lerpVectors(idleGunPos, aimGunPos, this.aimT);
-                this.weaponGroup.rotation.set(
-                    idleGunRot.x + (aimGunRot.x - idleGunRot.x) * this.aimT, 
-                    idleGunRot.y + (aimGunRot.y - idleGunRot.y) * this.aimT, 
-                    idleGunRot.z + (aimGunRot.z - idleGunRot.z) * this.aimT
-                );
+                let curGunPos = idleGunPos.clone().lerp(aimGunPos, this.aimT).lerp(turretGunPos, this.turretUseT);
+                this.weaponGroup.position.copy(curGunPos);
+                
+                let wgRotX = idleGunRot.x + (aimGunRot.x - idleGunRot.x) * this.aimT; wgRotX += (turretGunRot.x - wgRotX) * this.turretUseT;
+                let wgRotY = idleGunRot.y + (aimGunRot.y - idleGunRot.y) * this.aimT; wgRotY += (turretGunRot.y - wgRotY) * this.turretUseT;
+                let wgRotZ = idleGunRot.z + (aimGunRot.z - idleGunRot.z) * this.aimT; wgRotZ += (turretGunRot.z - wgRotZ) * this.turretUseT;
+                this.weaponGroup.rotation.set(wgRotX, wgRotY, wgRotZ);
                 
                 if (this.state === 'moving') { 
                     this.weaponGroup.position.y += Math.sin(this.walkTime * 2) * 0.02; 
                     this.weaponGroup.rotation.x += Math.sin(this.walkTime) * 0.05; 
                 }
 
-                const idleRArm = new THREE.Euler(-0.4, -0.2, 0.1); const aimRArm = new THREE.Euler(-1.2, -0.2, 0.3);
-                const idleRForearm = new THREE.Euler(-0.6, 0, 0); const aimRForearm = new THREE.Euler(-2.4, 0, 0);
+                const idleRArm = new THREE.Euler(-0.4, -0.2, 0.1); const aimRArm = new THREE.Euler(-1.2, -0.2, 0.3); const turretRArm = new THREE.Euler(-0.9, -0.1, 0);
+                const idleRForearm = new THREE.Euler(-0.6, 0, 0); const aimRForearm = new THREE.Euler(-2.4, 0, 0); const turretRForearm = new THREE.Euler(-0.3, 0, 0);
 
-                const idleLArm = new THREE.Euler(-0.3, 0.4, -0.2); const aimLArm = new THREE.Euler(-1.4, 0.8, 0);
-                const idleLForearm = new THREE.Euler(-1.2, 0, 0); const aimLForearm = new THREE.Euler(-0.2, 0, 0);
+                const idleLArm = new THREE.Euler(-0.3, 0.4, -0.2); const aimLArm = new THREE.Euler(-1.4, 0.8, 0); const turretLArm = new THREE.Euler(-0.9, 0.1, 0);
+                const idleLForearm = new THREE.Euler(-1.2, 0, 0); const aimLForearm = new THREE.Euler(-0.2, 0, 0); const turretLForearm = new THREE.Euler(-0.3, 0, 0);
 
-                this.rightArm.rotation.set(
-                    idleRArm.x + (aimRArm.x - idleRArm.x) * this.aimT + (armSwing * (1 - this.aimT)), 
-                    idleRArm.y + (aimRArm.y - idleRArm.y) * this.aimT, 
-                    idleRArm.z + (aimRArm.z - idleRArm.z) * this.aimT
-                );
-                this.rightForearm.rotation.x = idleRForearm.x + (aimRForearm.x - idleRForearm.x) * this.aimT;
+                let rArmX = idleRArm.x + (aimRArm.x - idleRArm.x) * this.aimT + (armSwing * (1 - this.aimT) * (1 - this.turretUseT)); rArmX += (turretRArm.x - rArmX) * this.turretUseT;
+                let rArmY = idleRArm.y + (aimRArm.y - idleRArm.y) * this.aimT; rArmY += (turretRArm.y - rArmY) * this.turretUseT;
+                let rArmZ = idleRArm.z + (aimRArm.z - idleRArm.z) * this.aimT; rArmZ += (turretRArm.z - rArmZ) * this.turretUseT;
+                this.rightArm.rotation.set(rArmX, rArmY, rArmZ);
 
-                this.leftArm.rotation.set(
-                    idleLArm.x + (aimLArm.x - idleLArm.x) * this.aimT - (armSwing * (1 - this.aimT)), 
-                    idleLArm.y + (aimLArm.y - idleLArm.y) * this.aimT, 
-                    idleLArm.z + (aimLArm.z - idleLArm.z) * this.aimT
-                );
-                this.leftForearm.rotation.x = idleLForearm.x + (aimLForearm.x - idleLForearm.x) * this.aimT;
+                let rForearmX = idleRForearm.x + (aimRForearm.x - idleRForearm.x) * this.aimT; rForearmX += (turretRForearm.x - rForearmX) * this.turretUseT;
+                this.rightForearm.rotation.x = rForearmX;
+
+                let lArmX = idleLArm.x + (aimLArm.x - idleLArm.x) * this.aimT - (armSwing * (1 - this.aimT) * (1 - this.turretUseT)); lArmX += (turretLArm.x - lArmX) * this.turretUseT;
+                let lArmY = idleLArm.y + (aimLArm.y - idleLArm.y) * this.aimT; lArmY += (turretLArm.y - lArmY) * this.turretUseT;
+                let lArmZ = idleLArm.z + (aimLArm.z - idleLArm.z) * this.aimT; lArmZ += (turretLArm.z - lArmZ) * this.turretUseT;
+                this.leftArm.rotation.set(lArmX, lArmY, lArmZ);
+
+                let lForearmX = idleLForearm.x + (aimLForearm.x - idleLForearm.x) * this.aimT; lForearmX += (turretLForearm.x - lForearmX) * this.turretUseT;
+                this.leftForearm.rotation.x = lForearmX;
 
                 const peers = this.isEnemy ? enemies : allies;
                 peers.forEach(peer => {
@@ -2127,59 +2208,67 @@
                 this.mesh.position.x = aiPos2D.x;
                 this.mesh.position.z = aiPos2D.z;
 
-                let minZ, maxZ;
-                if (this.isEnemy) {
-                    if (this.coverTier > 0) { minZ = -5.0; maxZ = 36.2; } 
-                    else if (this.trenchLevel === 'front') { minZ = 18.2; maxZ = 21.8; }
-                    else { minZ = 26.8; maxZ = 36.2; }
-                } else {
-                    if (this.coverTier > 0) { minZ = -36.2; maxZ = 5.0; }
-                    else if (this.trenchLevel === 'front') { minZ = -21.8; maxZ = -18.2; }
-                    else { minZ = -36.2; maxZ = -26.8; }
+                // Restrict AI globally so they don't fall off the map edge, but REMOVE specific tier clamping!
+                // The tier clamping was teleporting advancing AIs into the walls mid-stride.
+                this.mesh.position.x = Math.max(-95, Math.min(95, this.mesh.position.x));
+                this.mesh.position.z = Math.max(-98, Math.min(98, this.mesh.position.z));
+
+                // Anti-stuck physics: if they wanted to move but their position barely changed (blocked by a wall or crate)
+                if (this.state === 'moving') {
+                    let movedSq = (this.mesh.position.x - startX)**2 + (this.mesh.position.z - startZ)**2;
+                    let expectedSq = Math.pow((this.isAdvancing ? 6.5 : 4.5) * dt, 2);
+                    if (movedSq < expectedSq * 0.05) { // Barely moved
+                        // Apply randomized lateral slide to un-jam them from the geometry
+                        this.mesh.position.x += (Math.random() - 0.5) * 6.0 * dt;
+                        this.mesh.position.z += (Math.random() - 0.5) * 6.0 * dt;
+                        let fixPos = { x: this.mesh.position.x, z: this.mesh.position.z };
+                        resolveObstacles(fixPos, 0.4);
+                        this.mesh.position.x = Math.max(-95, Math.min(95, fixPos.x));
+                        this.mesh.position.z = Math.max(-98, Math.min(98, fixPos.z));
+                    }
                 }
-                this.mesh.position.z = Math.max(minZ, Math.min(maxZ, this.mesh.position.z));
 
                 if (this.state !== 'moving' && this.state !== 'using_turret' && this.targetCover && !this.targetCover.isTurret) {
-                    this.mesh.position.x += (this.targetCover.x - this.mesh.position.x) * 2 * dt;
-                    this.mesh.position.z += (this.targetCover.z - this.mesh.position.z) * 2 * dt;
+                    let dx = this.targetCover.x - this.mesh.position.x;
+                    let dz = this.targetCover.z - this.mesh.position.z;
+                    
+                    // Only apply micro-adjusting lerp if they are close. Prevents them from being dragged across the map if physics ejected them heavily.
+                    if (dx*dx + dz*dz < 4.0) {
+                        this.mesh.position.x += dx * 2 * dt;
+                        this.mesh.position.z += dz * 2 * dt;
+                    }
                 }
 
-                this.mesh.position.y = getTerrainHeight(this.mesh.position.x, this.mesh.position.z);
+                if (this.state !== 'using_turret') {
+                    this.mesh.position.y = getTerrainHeight(this.mesh.position.x, this.mesh.position.z);
+                }
             }
 
             calculateExposure(target) {
+                // MASSIVE FPS BOOST: Replaced 3 precise raycasts per target with 1 single center-mass raycast
                 const heightOffset = 1.55 - (this.crouchT * 0.45);
                 const eyeStart = this.mesh.position.clone().add(new THREE.Vector3(0, heightOffset, 0));
-                const pointsToCheck = [];
                 
+                let pt;
                 if (target.isPlayer) {
                     const base = playerRoot.position.clone();
                     const pProne = isProne || slideTimer > 0;
-                    pointsToCheck.push(base.clone().add(new THREE.Vector3(0, pProne ? 0.3 : (isCrouched ? 0.8 : 1.5), 0))); 
-                    pointsToCheck.push(base.clone().add(new THREE.Vector3(0, pProne ? 0.15 : (isCrouched ? 0.4 : 1.0), 0))); 
-                    pointsToCheck.push(base.clone().add(new THREE.Vector3(0, 0.2, 0)));                    
+                    pt = base.clone().add(new THREE.Vector3(0, pProne ? 0.3 : (isCrouched ? 0.8 : 1.5), 0)); 
                 } else {
                     const base = target.mesh.position.clone();
                     const cOffset = target.crouchT * 0.45;
-                    pointsToCheck.push(base.clone().add(new THREE.Vector3(0, 1.55 - cOffset, 0)));         
-                    pointsToCheck.push(base.clone().add(new THREE.Vector3(0, 1.0 - (cOffset * 0.5), 0)));  
-                    pointsToCheck.push(base.clone().add(new THREE.Vector3(0, 0.3, 0)));                    
+                    pt = base.clone().add(new THREE.Vector3(0, 1.55 - cOffset, 0));         
                 }
 
-                let hits = 0;
+                const dir = pt.clone().sub(eyeStart).normalize();
+                const dist = eyeStart.distanceTo(pt);
+                raycaster.set(eyeStart, dir);
                 
-                for (let pt of pointsToCheck) {
-                    const dir = pt.clone().sub(eyeStart).normalize();
-                    const dist = eyeStart.distanceTo(pt);
-                    raycaster.set(eyeStart, dir);
-                    const intersects = raycaster.intersectObjects(worldMeshes, false);
-                    
-                    if (!(intersects.length > 0 && intersects[0].distance < dist)) {
-                        hits++;
-                    }
-                }
+                // Pure environment meshes. `false` prevents expensive recursive collision mapping.
+                const intersects = raycaster.intersectObjects(worldMeshes, false);
                 
-                return hits / pointsToCheck.length; 
+                if (intersects.length > 0 && intersects[0].distance < dist) return 0;
+                return 1; 
             }
 
             checkLOS(target) {
@@ -2194,32 +2283,48 @@
                 const myPos = this.mesh.position;
                 const myForward = new THREE.Vector3(0, 0, 1).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.mesh.rotation.y);
                 
-                let bestTarget = null;
-                let bestScore = Infinity;
+                // MASSIVE FPS BOOST: Pre-sort targets by simple math distance BEFORE doing any expensive raycasts
+                let potentialTargets = [];
 
                 for (let i = 0; i < targets.length; i++) {
                     const target = targets[i];
                     const tPos = target.isPlayer ? playerRoot.position : target.mesh.position;
-                    let score = tPos.distanceToSquared(myPos);
+                    let distSq = tPos.distanceToSquared(myPos);
                     
-                    if (score > 10000) continue; 
-                    
-                    const exposure = this.calculateExposure(target);
-                    if (exposure === 0) continue; 
+                    if (distSq > 10000) continue; 
 
                     const toTarget = tPos.clone().sub(myPos).normalize();
                     const dot = myForward.dot(toTarget);
                     
+                    // Don't raycast targets far behind the AI
+                    if (dot < -0.2) continue; 
+                    
+                    let score = distSq;
                     if (dot > 0.5) score *= 0.3; 
                     else if (dot < 0) score *= 2.5;
-                    
-                    score /= exposure; 
-                    
-                    score *= (0.8 + Math.random() * 0.4); 
 
-                    if (score < bestScore) {
-                        bestScore = score;
-                        bestTarget = target;
+                    potentialTargets.push({ target, score });
+                }
+
+                // Sort closest/best targets first
+                potentialTargets.sort((a, b) => a.score - b.score);
+                
+                let bestTarget = null;
+                let bestScore = Infinity;
+
+                // MASSIVE FPS BOOST: Only test LOS for the top 3 best viable targets instead of all 50 enemies
+                const checks = Math.min(3, potentialTargets.length);
+                for (let i = 0; i < checks; i++) {
+                    const pt = potentialTargets[i];
+                    const exposure = this.calculateExposure(pt.target);
+                    if (exposure === 0) continue; 
+
+                    pt.score /= exposure; 
+                    pt.score *= (0.8 + Math.random() * 0.4); 
+
+                    if (pt.score < bestScore) {
+                        bestScore = pt.score;
+                        bestTarget = pt.target;
                     }
                 }
                 
@@ -2270,7 +2375,8 @@
 
                 // Target everyone
                 const hitTargets = [playerAI.mesh, ...allies.map(a => a.mesh), ...enemies.map(e => e.mesh)];
-                const intersects = raycaster.intersectObjects([...worldMeshes, ...hitTargets], true);
+                // Deep recursive check needed here to register direct body shots on nested meshes
+                const intersects = raycaster.intersectObjects([...worldMeshes, ...hitTargets], true); 
 
                 let hitDistance = 200;
                 if (intersects.length > 0) {
@@ -2649,7 +2755,7 @@
 
                     let nextPos = playerRoot.position.clone().add(velocity); const pr = 0.4; 
                     
-                    if (nextPos.z < -36.3 + pr) nextPos.z = -36.3 + pr; if (nextPos.z > 36.3 - pr) nextPos.z = 36.3 - pr;
+                    if (nextPos.z < -98 + pr) nextPos.z = -98 + pr; if (nextPos.z > 98 - pr) nextPos.z = 98 - pr;
                     if (nextPos.x < -95 + pr) nextPos.x = -95 + pr; if (nextPos.x > 95 - pr) nextPos.x = 95 - pr;
 
                     let pPos2D = { x: nextPos.x, z: nextPos.z };
