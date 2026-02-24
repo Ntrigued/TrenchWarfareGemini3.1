@@ -219,7 +219,7 @@
                 <p>Select a mode to deploy and lock pointer.</p>
                 <p>
                     <b>WASD</b>: Move &nbsp;|&nbsp; <b>Shift</b>: Sprint &nbsp;|&nbsp; <b>C</b>: Toggle Crouch / Slide<br>
-                    <b>Q / E</b>: Lean Left / Right &nbsp;|&nbsp; <b>T</b>: Mount Turret &nbsp;|&nbsp; <b>R</b>: Reload Turret &nbsp;|&nbsp; <b>Z</b>: Go Prone<br>
+                    <b>Q / E</b>: Lean (Roll while Prone) &nbsp;|&nbsp; <b>T</b>: Mount Turret &nbsp;|&nbsp; <b>R</b>: Reload Turret &nbsp;|&nbsp; <b>Z</b>: Go Prone<br>
                     <b>RMB / Space</b>: Aim Down Sights &nbsp;|&nbsp; <b>LMB</b>: Fire<br>
                     <b>1, 2, 3</b>: Switch Weapons &nbsp;|&nbsp; <b>F / G</b>: Sniper Zoom
                 </p>
@@ -860,6 +860,7 @@
             isPlayer: true, hp: 10, dead: false,
             takeDamage: function(amt, attacker) {
                 if (this.dead) return;
+                
                 playNearMissSound(); 
                 triggerShellShock(1.0); // Muffle hearing when hit
                 playerHp -= amt;
@@ -1059,6 +1060,9 @@
         const keys = { w: false, a: false, s: false, d: false, shift: false, z: false, c: false, q: false, e: false, space: false, lmb: false };
         let lastQPress = 0, lastEPress = 0; let qToggled = false, eToggled = false;
         let lmbJustPressed = false; let isCrouched = false; let isProne = false; let slideTimer = 0; let slideSpeed = 0; let slideDir = new THREE.Vector3(); let yaw = 0; let pitch = 0; let playerHp = 10; let initialized = false; let mgHeat = 0; let mgOverheated = false; let gameMode = 'endless';
+        let rollAngle = 0; // Tracks rotation for prone tactical roll
+        let activeRollDir = 0; // 0 = none, 1 = left, -1 = right
+        let rollCooldown = 0; // Delay between rolls
         let playerKills = 0;
         
         let allyReserves = 0;
@@ -1081,7 +1085,7 @@
             
             playerRoot.position.set(spawnPos2D.x, getTerrainHeight(spawnPos2D.x, spawnPos2D.z), spawnPos2D.z); 
             yaw = Math.PI; pitch = 0; isCrouched = false; isProne = false; slideTimer = 0; mgHeat = 0; mgOverheated = false;
-            qToggled = false; eToggled = false;
+            qToggled = false; eToggled = false; rollAngle = 0; activeRollDir = 0; rollCooldown = 0;
             
             playerKills = 0;
             document.getElementById('kill-count-indicator').innerText = 'Kills: 0';
@@ -1172,7 +1176,7 @@
                         slideTimer = 0; // cancel active slide
                         isCrouched = false;
                     } else if (isSprintMoving) {
-                        isCrouched = true; isProne = false; // End in crouch
+                        isCrouched = true; isProne = false; qToggled = false; eToggled = false; // End in crouch and reset lean
                         slideTimer = 0.75; slideSpeed = 16.0;
                         let mDir = new THREE.Vector3();
                         if (keys.w) mDir.z -= 1; if (keys.s) mDir.z += 1; if (keys.a) mDir.x -= 1; if (keys.d) mDir.x += 1;
@@ -1190,7 +1194,7 @@
                 if (!keys.z) {
                     slideTimer = 0;
                     if (isProne) { isProne = false; isCrouched = true; }
-                    else { isProne = true; isCrouched = false; }
+                    else { isProne = true; isCrouched = false; qToggled = false; eToggled = false; } // Reset lean states when going prone
                 } 
                 keys.z = true; 
             }
@@ -1275,7 +1279,23 @@
             
             const barrelPos = new THREE.Vector3(0, 0, wep.barrelLen).applyMatrix4(weaponContainer.matrixWorld);
             const camDir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.getWorldQuaternion(new THREE.Quaternion()));
-            if (wep.type === 'auto') { camDir.x += (Math.random() - 0.5) * 0.015; camDir.y += (Math.random() - 0.5) * 0.015; camDir.normalize(); }
+            
+            if (wep.type === 'auto') { 
+                // Realistic spread: Stance + Sustained Fire Bloom
+                let stanceMult = 1.0;
+                if (isProne) stanceMult = 0.25; // Bipod deployed, highly accurate
+                else if (isCrouched) stanceMult = 0.6; // Braced, moderate
+                
+                // Add penalty for moving while firing
+                if (keys.w || keys.a || keys.s || keys.d) stanceMult *= 1.5;
+
+                // Base spread (tight burst) + bloom from heat (sustained fire spray)
+                let currentSpread = (0.005 + (mgHeat / 100) * 0.05) * stanceMult;
+                
+                camDir.x += (Math.random() - 0.5) * currentSpread; 
+                camDir.y += (Math.random() - 0.5) * currentSpread; 
+                camDir.normalize(); 
+            }
 
             fpFlashMaterial.opacity = 1.0; fpFlashLight.intensity = 2.0; 
             fpFlashGroup.rotation.z = Math.random() * Math.PI;
@@ -1659,8 +1679,9 @@
                 if (!this.target || Math.random() < 0.8) {
                     // Don't target teammates from accidental crossfire
                     const isFriendlyFire = !attacker.isPlayer && (attacker.isEnemy === this.isEnemy);
+                    const isPlayerShootingAlly = attacker.isPlayer && !this.isEnemy;
                     
-                    if (!isFriendlyFire) {
+                    if (!isFriendlyFire && !isPlayerShootingAlly) {
                         this.target = attacker;
                         let targetPos = attacker.isPlayer ? camera.getWorldPosition(new THREE.Vector3()) : attacker.mesh.position.clone();
                         this.scanBaseYaw = Math.atan2(targetPos.x - this.mesh.position.x, targetPos.z - this.mesh.position.z);
@@ -1705,8 +1726,10 @@
                         document.getElementById('kill-count-indicator').innerText = `Kills: ${playerKills}`;
                     }
                 } else if (attacker && !attacker.dead) {
-                    // Prevent AI from mutiny-ing against each other due to accidental crossfire, but punish rogue players
-                    if (attacker.isPlayer || attacker.isEnemy !== this.isEnemy) {
+                    const isFriendlyFire = !attacker.isPlayer && (attacker.isEnemy === this.isEnemy);
+                    const isPlayerShootingAlly = attacker.isPlayer && !this.isEnemy;
+                    
+                    if (!isFriendlyFire && !isPlayerShootingAlly) {
                         this.alert(attacker);
                     }
                     if (this.state === 'aiming' || this.state === 'popping') this.timer += 0.2;
@@ -2498,16 +2521,53 @@
                 camera.fov += (targetFov - camera.fov) * 15 * dt; camera.updateProjectionMatrix();
                 weaponContainer.position.z += (-0.4 - weaponContainer.position.z) * 10 * dt;
 
-                const isLeaningLeft = (keys.q || qToggled) && !mountedTurret;
-                const isLeaningRight = (keys.e || eToggled) && !mountedTurret && !isLeaningLeft;
+                const isLeaningLeft = (keys.q || qToggled) && !mountedTurret && !isProne;
+                const isLeaningRight = (keys.e || eToggled) && !mountedTurret && !isLeaningLeft && !isProne;
+                
+                // Track manual rolls while prone
+                if (rollCooldown > 0) rollCooldown -= dt;
+                
+                if (isProne && !mountedTurret) {
+                    if (activeRollDir === 0 && rollCooldown <= 0) {
+                        if (keys.q) activeRollDir = 1;
+                        else if (keys.e) activeRollDir = -1;
+                    }
+                } else {
+                    activeRollDir = 0;
+                }
+                
+                const isRollingLeft = activeRollDir === 1;
+                const isRollingRight = activeRollDir === -1;
 
-                const targetLeanZ = isLeaningLeft ? 0.25 : (isLeaningRight ? -0.25 : 0); 
-                const targetLeanX = isLeaningLeft ? -0.5 : (isLeaningRight ? 0.5 : 0);
-                
-                leanObject.rotation.z += (targetLeanZ - leanObject.rotation.z) * 10 * dt; 
-                
-                if (typeof leanObject.userData.baseLocalX === 'undefined') leanObject.userData.baseLocalX = 0;
-                leanObject.userData.baseLocalX += (targetLeanX - leanObject.userData.baseLocalX) * 10 * dt;
+                if (!isProne) {
+                    const targetLeanZ = isLeaningLeft ? 0.25 : (isLeaningRight ? -0.25 : 0); 
+                    const targetLeanX = isLeaningLeft ? -0.5 : (isLeaningRight ? 0.5 : 0);
+                    
+                    leanObject.rotation.z += (targetLeanZ - leanObject.rotation.z) * 10 * dt; 
+                    
+                    if (typeof leanObject.userData.baseLocalX === 'undefined') leanObject.userData.baseLocalX = 0;
+                    leanObject.userData.baseLocalX += (targetLeanX - leanObject.userData.baseLocalX) * 10 * dt;
+                    
+                    rollAngle = leanObject.rotation.z; // Keep synced for when switching to roll
+                } else {
+                    if (isRollingLeft) {
+                        rollAngle += Math.PI * 3 * dt; // Full 360 Spin Left
+                        if (rollAngle >= Math.PI * 2) { rollAngle = 0; activeRollDir = 0; rollCooldown = 0.4; } // End roll, start cooldown
+                    } else if (isRollingRight) {
+                        rollAngle -= Math.PI * 3 * dt; // Full 360 Spin Right
+                        if (rollAngle <= -Math.PI * 2) { rollAngle = 0; activeRollDir = 0; rollCooldown = 0.4; } // End roll, start cooldown
+                    } else {
+                        // Spring back to 0 rotation through the shortest path
+                        rollAngle = rollAngle % (Math.PI * 2);
+                        if (rollAngle > Math.PI) rollAngle -= Math.PI * 2;
+                        if (rollAngle < -Math.PI) rollAngle += Math.PI * 2;
+                        rollAngle += (0 - rollAngle) * 12 * dt; 
+                    }
+                    leanObject.rotation.z = rollAngle;
+                    
+                    if (typeof leanObject.userData.baseLocalX === 'undefined') leanObject.userData.baseLocalX = 0;
+                    leanObject.userData.baseLocalX += (0 - leanObject.userData.baseLocalX) * 10 * dt; // Reset lateral lean offset
+                }
 
                 let targetCamY = 0;
                 let targetCamZ = 0;
@@ -2526,7 +2586,11 @@
                     leanObject.position.z = resolvedLocalVec.z; 
 
                     const effProne = isProne || slideTimer > 0;
-                    const targetEyeY = effProne ? 0.3 : (isCrouched ? 0.8 : 1.5); 
+                    let targetEyeY = effProne ? 0.3 : (isCrouched ? 0.8 : 1.5); 
+                    
+                    // Lower camera slightly during a fast roll
+                    if (isProne && (isRollingLeft || isRollingRight)) targetEyeY = 0.2; 
+
                     leanObject.position.y += (targetEyeY - leanObject.position.y) * 10 * dt;
                     
                     pitchObject.position.z += (0 - pitchObject.position.z) * 15 * dt; // Reset Z when unmounted
@@ -2537,7 +2601,15 @@
                     playerAI.mesh.position.z = leanObject.position.z; 
 
                     const moveDir = new THREE.Vector3();
-                    if (keys.w) moveDir.z -= 1; if (keys.s) moveDir.z += 1; if (keys.a) moveDir.x -= 1; if (keys.d) moveDir.x += 1;
+                    // Rolling overrides W, S, A, D to force lateral momentum 
+                    if (isRollingLeft) {
+                        moveDir.x -= 1; 
+                    } else if (isRollingRight) {
+                        moveDir.x += 1;
+                    } else {
+                        if (keys.w) moveDir.z -= 1; if (keys.s) moveDir.z += 1; if (keys.a) moveDir.x -= 1; if (keys.d) moveDir.x += 1;
+                    }
+
                     if (moveDir.lengthSq() > 0) moveDir.normalize(); moveDir.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
 
                     let speed = 5; let bobSpeed = 8; let bobAmp = 0.05;
@@ -2549,7 +2621,13 @@
                         slideVelocity.copy(slideDir).multiplyScalar(slideSpeed * dt);
                         speed = 1.5; bobSpeed = 0; bobAmp = 0; // Much lower steering control while sliding
                     } else if (isProne) {
-                        speed = 1.125; bobSpeed = 4; bobAmp = 0.015; // Speed cut to 75% of previous (1.5)
+                        if (isRollingLeft || isRollingRight) {
+                            speed = 4.0; bobSpeed = 0; bobAmp = 0; // Fast sideways roll, no bobbing
+                        } else if (keys.shift && !isAiming) {
+                            speed = 3.0; bobSpeed = 6; bobAmp = 0.025; // Prone sprint (fast crawl)
+                        } else {
+                            speed = 1.125; bobSpeed = 4; bobAmp = 0.015; // Speed cut to 75% of previous (1.5)
+                        }
                     } else if (isCrouched) {
                         if (keys.shift && !isAiming) { speed = 6.5; bobSpeed = 10; bobAmp = 0.035; } // Crouch sprint
                         else { speed = 3; bobSpeed = 6; bobAmp = 0.02; } // Crouch walk
