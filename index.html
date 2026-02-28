@@ -1572,12 +1572,14 @@
                 if (this.isEnemy) {
                     if (this.coverTier === 1) return enemyPathCovers;
                     if (this.coverTier === 2) return midCoversEnemy;
-                    if (this.coverTier === 3) return allyCoversFront; // push into enemy (ally) trench
+                    if (this.coverTier === 3) return allyCoversFront; // enemy front trench
+                    if (this.coverTier === 4) return allyCoversBack;  // all the way to ally back trench
                     return this.trenchLevel === 'front' ? enemyCoversFront : enemyCoversBack;
                 } else {
                     if (this.coverTier === 1) return allyPathCovers;
                     if (this.coverTier === 2) return midCoversAlly;
-                    if (this.coverTier === 3) return enemyCoversFront; // push into enemy trench
+                    if (this.coverTier === 3) return enemyCoversFront; // enemy front trench
+                    if (this.coverTier === 4) return enemyCoversBack;  // all the way to enemy back trench
                     return this.trenchLevel === 'front' ? allyCoversFront : allyCoversBack;
                 }
             }
@@ -1662,7 +1664,15 @@
                     return !peers.some(p => p !== this && !p.dead && p.targetCover === c);
                 });
 
-                if (available.length === 0) available = covers; // fallback if crowded
+                if (available.length === 0) {
+                    // All covers claimed — pick the one fewest peers are already heading to
+                    const occupancy = covers.map(c => ({
+                        cover: c,
+                        count: peers.filter(p => p !== this && !p.dead && p.targetCover === c).length
+                    }));
+                    const minCount = Math.min(...occupancy.map(o => o.count));
+                    available = occupancy.filter(o => o.count === minCount).map(o => o.cover);
+                }
 
                 if (isSpawning) {
                     let safeAvailable = available.filter(c => !isSpotVisibleToPlayer(c));
@@ -1959,7 +1969,7 @@
                                     this.pickCover();
                                     this.state = 'moving';
                                 }
-                            } else if (this.isAdvancing && this.coverTier < 3 && !this.findTarget()) {
+                            } else if (this.isAdvancing && this.coverTier < 4 && !this.findTarget()) {
                                 // No visible target — push forward immediately without wasting time popping
                                 this.coverTier++;
                                 this.pickCover();
@@ -2059,7 +2069,7 @@
                             this.target = this.findTarget(); this.shootDelay = 0.1 + Math.random() * 0.2;
                             this.mesh.rotation.y = this.scanBaseYaw + Math.sin(performance.now() * 0.002 + this.mesh.id) * 0.5;
                             if (this.timer <= 0) {
-                                if (this.isAdvancing && this.coverTier < 3) {
+                                if (this.isAdvancing && this.coverTier < 4) {
                                     // No target found after scanning — keep pressing forward
                                     this.coverTier++;
                                     this.pickCover();
@@ -2082,7 +2092,7 @@
                                 if (this.interruptedMove) {
                                     this.interruptedMove = false;
                                     this.state = 'moving';
-                                } else if (this.isAdvancing && this.coverTier < 3 && Math.random() < 0.95) {
+                                } else if (this.isAdvancing && this.coverTier < 4 && Math.random() < 0.95) {
                                     this.coverTier++;
                                     this.pickCover();
                                     this.state = 'moving';
@@ -2177,12 +2187,14 @@
 
                 let minZ, maxZ;
                 if (this.isEnemy) {
-                    if (this.coverTier === 3) { minZ = -22.0; maxZ = 36.2; } // pushing into ally trench
+                    if (this.coverTier === 4) { minZ = -36.2; maxZ = 36.2; } // pushing into ally back trench
+                    else if (this.coverTier === 3) { minZ = -22.0; maxZ = 36.2; } // pushing into ally front trench
                     else if (this.coverTier > 0) { minZ = -5.0; maxZ = 36.2; }
                     else if (this.trenchLevel === 'front') { minZ = 18.2; maxZ = 21.8; }
                     else { minZ = 26.8; maxZ = 36.2; }
                 } else {
-                    if (this.coverTier === 3) { minZ = -36.2; maxZ = 22.0; } // pushing into enemy trench
+                    if (this.coverTier === 4) { minZ = -36.2; maxZ = 36.2; } // pushing into enemy back trench
+                    else if (this.coverTier === 3) { minZ = -36.2; maxZ = 22.0; } // pushing into enemy front trench
                     else if (this.coverTier > 0) { minZ = -36.2; maxZ = 5.0; }
                     else if (this.trenchLevel === 'front') { minZ = -21.8; maxZ = -18.2; }
                     else { minZ = -36.2; maxZ = -26.8; }
