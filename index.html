@@ -1572,10 +1572,12 @@
                 if (this.isEnemy) {
                     if (this.coverTier === 1) return enemyPathCovers;
                     if (this.coverTier === 2) return midCoversEnemy;
+                    if (this.coverTier === 3) return allyCoversFront; // push into enemy (ally) trench
                     return this.trenchLevel === 'front' ? enemyCoversFront : enemyCoversBack;
                 } else {
                     if (this.coverTier === 1) return allyPathCovers;
                     if (this.coverTier === 2) return midCoversAlly;
+                    if (this.coverTier === 3) return enemyCoversFront; // push into enemy trench
                     return this.trenchLevel === 'front' ? allyCoversFront : allyCoversBack;
                 }
             }
@@ -2066,7 +2068,7 @@
                                 if (this.interruptedMove) {
                                     this.interruptedMove = false;
                                     this.state = 'moving';
-                                } else if (this.isAdvancing && this.coverTier < 2 && Math.random() < 0.95) {
+                                } else if (this.isAdvancing && this.coverTier < 3 && Math.random() < 0.95) {
                                     this.coverTier++;
                                     this.pickCover();
                                     this.state = 'moving';
