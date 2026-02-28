@@ -438,40 +438,40 @@
 
         // Corridor AABB definitions (used for in-tunnel detection)
         const TUNNEL_CORRIDORS = [
-            { minX: -51.1, maxX: -48.9, minZ: -25.5, maxZ: 25.5 }, // left spine
-            { minX:  48.9, maxX:  51.1, minZ: -25.5, maxZ: 25.5 }, // right spine
+            { minX: -51.1, maxX: -48.9, minZ: -20.5, maxZ: 20.5 }, // left spine
+            { minX:  48.9, maxX:  51.1, minZ: -20.5, maxZ: 20.5 }, // right spine
             { minX: -51.1, maxX:  51.1, minZ: -11.0, maxZ: -9.0  }, // EW1 connector
             { minX: -51.1, maxX:  51.1, minZ:   7.0, maxZ:  9.0  }, // EW2 connector
             { minX:  -1.1, maxX:   1.1, minZ: -11.0, maxZ:  4.0  }, // center dead-end
         ];
 
-        // Entry/exit trigger positions (inside each trench near back wall)
+        // Entry/exit trigger positions — inside main trench floor (absZ < 22 → Y=-1.2)
         const TUNNEL_ENTRIES = [
-            { x: -50, z: -25, side: 'ally'  },
-            { x:  50, z: -25, side: 'ally'  },
-            { x: -50, z:  25, side: 'enemy' },
-            { x:  50, z:  25, side: 'enemy' },
+            { x: -50, z: -20, side: 'ally'  },
+            { x:  50, z: -20, side: 'ally'  },
+            { x: -50, z:  20, side: 'enemy' },
+            { x:  50, z:  20, side: 'enemy' },
         ];
 
         // AI route waypoints – 4 routes for allies, mirrored for enemies
         const ALLY_TUNNEL_ROUTES = {
             left:  [
-                [{x:-50,z:-25},{x:-50,z:-10},{x:-50,z:8},{x:-50,z:25}],           // straight left
-                [{x:-50,z:-25},{x:-50,z:-10},{x:50,z:-10},{x:50,z:8},{x:50,z:25}] // cross right
+                [{x:-50,z:-20},{x:-50,z:-10},{x:-50,z:8},{x:-50,z:20}],           // straight left
+                [{x:-50,z:-20},{x:-50,z:-10},{x:50,z:-10},{x:50,z:8},{x:50,z:20}] // cross right
             ],
             right: [
-                [{x:50,z:-25},{x:50,z:-10},{x:50,z:8},{x:50,z:25}],               // straight right
-                [{x:50,z:-25},{x:50,z:-10},{x:-50,z:-10},{x:-50,z:8},{x:-50,z:25}] // cross left
+                [{x:50,z:-20},{x:50,z:-10},{x:50,z:8},{x:50,z:20}],               // straight right
+                [{x:50,z:-20},{x:50,z:-10},{x:-50,z:-10},{x:-50,z:8},{x:-50,z:20}] // cross left
             ],
         };
         const ENEMY_TUNNEL_ROUTES = {
             left:  [
-                [{x:-50,z:25},{x:-50,z:8},{x:-50,z:-10},{x:-50,z:-25}],
-                [{x:-50,z:25},{x:-50,z:8},{x:50,z:8},{x:50,z:-10},{x:50,z:-25}]
+                [{x:-50,z:20},{x:-50,z:8},{x:-50,z:-10},{x:-50,z:-20}],
+                [{x:-50,z:20},{x:-50,z:8},{x:50,z:8},{x:50,z:-10},{x:50,z:-20}]
             ],
             right: [
-                [{x:50,z:25},{x:50,z:8},{x:50,z:-10},{x:50,z:-25}],
-                [{x:50,z:25},{x:50,z:8},{x:-50,z:8},{x:-50,z:-10},{x:-50,z:-25}]
+                [{x:50,z:20},{x:50,z:8},{x:50,z:-10},{x:50,z:-20}],
+                [{x:50,z:20},{x:50,z:8},{x:-50,z:8},{x:-50,z:-10},{x:-50,z:-20}]
             ],
         };
 
@@ -625,9 +625,9 @@
                 scene.add(floorM);
             }
 
-            // N-S spines (length 52 to overlap both E-W junctions)
-            addSeg(-50, 0, W, 52);
-            addSeg( 50, 0, W, 52);
+            // N-S spines (length 42 spans Z -21 to +21, matching entry points at Z=±20)
+            addSeg(-50, 0, W, 42);
+            addSeg( 50, 0, W, 42);
             // E-W connectors (width 104 to extend past both spines)
             addSeg(0, -10, 104, W);
             addSeg(0,   8, 104, W);
@@ -651,18 +651,28 @@
                 }
             }
 
-            // Entrance archways at each of the 4 entry points
+            // Surface-level hole frames at each of the 4 entry points
+            // (4 wood planks at Y=-0.9 form a visible rectangle above the trench floor at Y=-1.2,
+            //  plus a dark plane at Y=-1.18 marks the dark hole opening)
+            const holeMat = new THREE.MeshLambertMaterial({ color: 0x0a0806 });
             for (const e of TUNNEL_ENTRIES) {
-                const topBeam = new THREE.Mesh(new THREE.BoxGeometry(W + 0.8, 0.3, 0.5), woodMat);
-                topBeam.position.set(e.x, TUNNEL_FLOOR_Y + H - 0.1, e.z);
-                scene.add(topBeam);
-                const leftPost = new THREE.Mesh(new THREE.BoxGeometry(0.2, H, 0.5), woodMat);
-                leftPost.position.set(e.x - W / 2 - 0.15, TUNNEL_FLOOR_Y + H / 2, e.z);
-                scene.add(leftPost);
-                const rightPost = new THREE.Mesh(new THREE.BoxGeometry(0.2, H, 0.5), woodMat);
-                rightPost.position.set(e.x + W / 2 + 0.15, TUNNEL_FLOOR_Y + H / 2, e.z);
-                scene.add(rightPost);
-                worldMeshes.push(topBeam, leftPost, rightPost);
+                const plankL = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, W + 0.6), woodMat);
+                plankL.position.set(e.x - (W / 2 + 0.15), -0.9, e.z);
+                scene.add(plankL);
+                const plankR = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, W + 0.6), woodMat);
+                plankR.position.set(e.x + (W / 2 + 0.15), -0.9, e.z);
+                scene.add(plankR);
+                const plankN = new THREE.Mesh(new THREE.BoxGeometry(W + 0.6, 0.3, 0.3), woodMat);
+                plankN.position.set(e.x, -0.9, e.z + (W / 2 + 0.15));
+                scene.add(plankN);
+                const plankS = new THREE.Mesh(new THREE.BoxGeometry(W + 0.6, 0.3, 0.3), woodMat);
+                plankS.position.set(e.x, -0.9, e.z - (W / 2 + 0.15));
+                scene.add(plankS);
+                worldMeshes.push(plankL, plankR, plankN, plankS);
+                const hole = new THREE.Mesh(new THREE.PlaneGeometry(W - 0.1, W - 0.1), holeMat);
+                hole.rotation.x = -Math.PI / 2;
+                hole.position.set(e.x, -1.18, e.z);
+                scene.add(hole);
             }
         })();
 
@@ -2866,7 +2876,7 @@
                         for (const e of TUNNEL_ENTRIES) {
                             const dx = playerRoot.position.x - e.x;
                             const dz = playerRoot.position.z - e.z;
-                            if (dx*dx + dz*dz < 1.8 * 1.8) {
+                            if (dx*dx + dz*dz < 2.5 * 2.5) {
                                 playerTunnelActive = true;
                                 playerTunnelCooldown = 2.5;
                                 break;
@@ -2882,7 +2892,7 @@
                             for (const e of TUNNEL_ENTRIES) {
                                 const dx = playerRoot.position.x - e.x;
                                 const dz = playerRoot.position.z - e.z;
-                                if (dx*dx + dz*dz < 2.5 * 2.5) {
+                                if (dx*dx + dz*dz < 3.0 * 3.0) {
                                     playerTunnelActive = false;
                                     break;
                                 }
