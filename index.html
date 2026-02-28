@@ -657,7 +657,13 @@
                 let tP=new THREE.Vector3(); if(this.target.isPlayer){camera.getWorldPosition(tP);tP.y-=0.2;}else{const tHO=1.55-(this.target.crouchT*0.45)-(this.target.crawlT*1.2);tP.copy(this.target.mesh.position).add(new THREE.Vector3(0,tHO,0));}
                 const dir=tP.clone().sub(eS).normalize(), dist=eS.distanceTo(tP); let sp=0.01+(dist*0.001); if(!this.target.isPlayer)sp*=12.0; dir.x+=(Math.random()-0.5)*sp; dir.y+=(Math.random()-0.5)*sp; dir.z+=(Math.random()-0.5)*sp; dir.normalize();
                 showMuzzleFlash(vS,dir); raycaster.set(eS,dir); if(this.shotsFired%4===0)playPositionalSound(vS,'gunshot');
-                const hits=raycaster.intersectObjects([...worldMeshes,playerAI.mesh,...allies.map(a=>a.mesh),...enemies.map(e=>e.mesh)],true); let hD=200;
+                
+                // CRITICAL FIX: Exclude the shooter's own mesh so they don't block their own bullets!
+                const targetMeshes = [...worldMeshes, playerAI.mesh];
+                allies.forEach(a => { if (a !== this) targetMeshes.push(a.mesh); });
+                enemies.forEach(e => { if (e !== this) targetMeshes.push(e.mesh); });
+                
+                const hits=raycaster.intersectObjects(targetMeshes,true); let hD=200;
                 if(hits.length>0){ const h=hits[0]; hD=h.distance; playPositionalSound(h.point,'impact'); if(h.object.userData.ai){ const hAI=h.object.userData.ai; if(hAI.isPlayer)hAI.takeDamage(1,this); else hAI.takeDamage(h.object.name==="head"?99:1,this); } else{ let n=new THREE.Vector3(0,1,0); if(h.face)n.copy(h.face.normal).applyMatrix3(new THREE.Matrix3().getNormalMatrix(h.object.matrixWorld)).normalize(); createImpact(h.point,n); if(Math.random()<0.6){let ref=dir.clone().sub(n.clone().multiplyScalar(2*dir.dot(n))).normalize(); ref.x+=(Math.random()-0.5)*0.3; ref.y+=Math.random()*0.4; ref.z+=(Math.random()-0.5)*0.3; ref.normalize(); createTracer(h.point,ref,60); if(camera.getWorldPosition(new THREE.Vector3()).distanceToSquared(h.point)<64.0)playSoundFile('whiz',1.5+Math.random()*0.5,0.2);} } }
                 if(Math.random()<tracerProbability)createTracer(vS,dir,hD);
                 const bR=new THREE.Ray(eS,dir), hp=[...allies,...enemies,playerAI]; let cP=new THREE.Vector3();
