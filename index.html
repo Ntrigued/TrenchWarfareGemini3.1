@@ -213,6 +213,8 @@
         <div id="reserves-indicator">Enemies Remaining: 0</div>
         <div id="kill-count-indicator">Kills: 0</div>
         <div id="weapon-indicator">1: Rifle</div>
+        <div id="tunnelIndicator" style="display:none; position:absolute; bottom:80px; left:50%; transform:translateX(-50%); color:#c8a870; font-size:13px; letter-spacing:3px; text-shadow:0 0 8px #000; pointer-events:none;">&#x21A7; UNDERGROUND &#x21A7;</div>
+        <div id="tunnelHint" style="display:none; position:absolute; bottom:80px; left:50%; transform:translateX(-50%); color:#aaa; font-size:12px; letter-spacing:1px; text-shadow:0 0 6px #000; pointer-events:none;">[ TUNNEL ENTRANCE ]</div>
         <div id="instructions">
             <div class="inst-text">
                 <h2>TRENCH WARFARE</h2>
@@ -428,7 +430,62 @@
         const collisionObstacles = [];
         const turrets = [];
         let mountedTurret = null;
-        
+
+        // === TUNNEL SYSTEM ===
+        const TUNNEL_FLOOR_Y = -4.0;
+        const TUNNEL_HEIGHT  = 2.8;
+        const TUNNEL_WIDTH   = 2.2;
+
+        // Corridor AABB definitions (used for in-tunnel detection)
+        const TUNNEL_CORRIDORS = [
+            { minX: -51.1, maxX: -48.9, minZ: -20.5, maxZ: 20.5 }, // left spine
+            { minX:  48.9, maxX:  51.1, minZ: -20.5, maxZ: 20.5 }, // right spine
+            { minX: -51.1, maxX:  51.1, minZ: -11.0, maxZ: -9.0  }, // EW1 connector
+            { minX: -51.1, maxX:  51.1, minZ:   7.0, maxZ:  9.0  }, // EW2 connector
+            { minX:  -1.1, maxX:   1.1, minZ: -11.0, maxZ:  4.0  }, // center dead-end
+        ];
+
+        // Entry/exit trigger positions — inside main trench floor (absZ < 22 → Y=-1.2)
+        const TUNNEL_ENTRIES = [
+            { x: -50, z: -20, side: 'ally'  },
+            { x:  50, z: -20, side: 'ally'  },
+            { x: -50, z:  20, side: 'enemy' },
+            { x:  50, z:  20, side: 'enemy' },
+        ];
+
+        // AI route waypoints – 4 routes for allies, mirrored for enemies
+        const ALLY_TUNNEL_ROUTES = {
+            left:  [
+                [{x:-50,z:-20},{x:-50,z:-10},{x:-50,z:8},{x:-50,z:20}],           // straight left
+                [{x:-50,z:-20},{x:-50,z:-10},{x:50,z:-10},{x:50,z:8},{x:50,z:20}] // cross right
+            ],
+            right: [
+                [{x:50,z:-20},{x:50,z:-10},{x:50,z:8},{x:50,z:20}],               // straight right
+                [{x:50,z:-20},{x:50,z:-10},{x:-50,z:-10},{x:-50,z:8},{x:-50,z:20}] // cross left
+            ],
+        };
+        const ENEMY_TUNNEL_ROUTES = {
+            left:  [
+                [{x:-50,z:20},{x:-50,z:8},{x:-50,z:-10},{x:-50,z:-20}],
+                [{x:-50,z:20},{x:-50,z:8},{x:50,z:8},{x:50,z:-10},{x:50,z:-20}]
+            ],
+            right: [
+                [{x:50,z:20},{x:50,z:8},{x:50,z:-10},{x:50,z:-20}],
+                [{x:50,z:20},{x:50,z:8},{x:-50,z:8},{x:-50,z:-10},{x:-50,z:-20}]
+            ],
+        };
+
+        // Player tunnel state
+        let playerTunnelActive = false;
+        let playerTunnelCooldown = 0;
+
+        function isInTunnelCorridor(x, z) {
+            for (const c of TUNNEL_CORRIDORS) {
+                if (x >= c.minX && x <= c.maxX && z >= c.minZ && z <= c.maxZ) return true;
+            }
+            return false;
+        }
+
         function getTerrainHeight(x, z) {
             const absZ = Math.abs(z);
             if (absZ < 22.0) return -1.2; 
@@ -548,6 +605,76 @@
         scene.add(sw1, sw2); worldMeshes.push(sw1, sw2);
         collisionObstacles.push({ minX: -101, maxX: -99, minZ: -40, maxZ: 40 });
         collisionObstacles.push({ minX: 99, maxX: 101, minZ: -40, maxZ: 40 });
+
+        // === BUILD TUNNEL GEOMETRY ===
+        (function buildTunnelSystem() {
+            const tunnelMat = new THREE.MeshLambertMaterial({ color: 0x2a1a0a, side: THREE.BackSide });
+            const tunnelFloorMat = new THREE.MeshLambertMaterial({ color: 0x2e2416 });
+            const H = TUNNEL_HEIGHT;
+            const W = TUNNEL_WIDTH;
+            const cy = TUNNEL_FLOOR_Y + H / 2;
+
+            function addSeg(cx, cz, bw, bz) {
+                const box = new THREE.Mesh(new THREE.BoxGeometry(bw, H, bz), tunnelMat);
+                box.position.set(cx, cy, cz);
+                scene.add(box);
+                worldMeshes.push(box);
+                const floorM = new THREE.Mesh(new THREE.PlaneGeometry(bw - 0.1, bz - 0.1), tunnelFloorMat);
+                floorM.rotation.x = -Math.PI / 2;
+                floorM.position.set(cx, TUNNEL_FLOOR_Y + 0.02, cz);
+                scene.add(floorM);
+            }
+
+            // N-S spines (length 42 spans Z -21 to +21, matching entry points at Z=±20)
+            addSeg(-50, 0, W, 42);
+            addSeg( 50, 0, W, 42);
+            // E-W connectors (width 104 to extend past both spines)
+            addSeg(0, -10, 104, W);
+            addSeg(0,   8, 104, W);
+            // Center dead-end (Z -10 to +4, length 16, center -3)
+            addSeg(0, -3, W, 16);
+
+            // Support beams along N-S spines
+            for (let bz = -20; bz <= 20; bz += 8) {
+                for (const sx of [-50, 50]) {
+                    const beam = new THREE.Mesh(new THREE.BoxGeometry(W + 0.3, 0.25, 0.35), woodMat);
+                    beam.position.set(sx, TUNNEL_FLOOR_Y + H - 0.2, bz);
+                    scene.add(beam);
+                }
+            }
+            // Support beams along E-W connectors
+            for (let bx = -40; bx <= 40; bx += 16) {
+                for (const tz of [-10, 8]) {
+                    const beam = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.25, W + 0.3), woodMat);
+                    beam.position.set(bx, TUNNEL_FLOOR_Y + H - 0.2, tz);
+                    scene.add(beam);
+                }
+            }
+
+            // Surface-level hole frames at each of the 4 entry points
+            // (4 wood planks at Y=-0.9 form a visible rectangle above the trench floor at Y=-1.2,
+            //  plus a dark plane at Y=-1.18 marks the dark hole opening)
+            const holeMat = new THREE.MeshLambertMaterial({ color: 0x0a0806 });
+            for (const e of TUNNEL_ENTRIES) {
+                const plankL = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, W + 0.6), woodMat);
+                plankL.position.set(e.x - (W / 2 + 0.15), -0.9, e.z);
+                scene.add(plankL);
+                const plankR = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, W + 0.6), woodMat);
+                plankR.position.set(e.x + (W / 2 + 0.15), -0.9, e.z);
+                scene.add(plankR);
+                const plankN = new THREE.Mesh(new THREE.BoxGeometry(W + 0.6, 0.3, 0.3), woodMat);
+                plankN.position.set(e.x, -0.9, e.z + (W / 2 + 0.15));
+                scene.add(plankN);
+                const plankS = new THREE.Mesh(new THREE.BoxGeometry(W + 0.6, 0.3, 0.3), woodMat);
+                plankS.position.set(e.x, -0.9, e.z - (W / 2 + 0.15));
+                scene.add(plankS);
+                worldMeshes.push(plankL, plankR, plankN, plankS);
+                const hole = new THREE.Mesh(new THREE.PlaneGeometry(W - 0.1, W - 0.1), holeMat);
+                hole.rotation.x = -Math.PI / 2;
+                hole.position.set(e.x, -1.18, e.z);
+                scene.add(hole);
+            }
+        })();
 
         const allyCoversFront = [], allyCoversBack = [];
         const enemyCoversFront = [], enemyCoversBack = [];
@@ -1564,7 +1691,15 @@
 
                 scene.add(this.mesh);
                 this.dead = true; this.timer = Math.random() * 2; this.crouchT = 1.0; this.aimT = 0.0; this.walkTime = Math.random() * 10;
-                
+
+                // Tunnel state
+                this.isTunneling      = false;
+                this.goingToTunnel    = false;
+                this.tunnelEntryTarget = null;
+                this.tunnelPath        = null;
+                this.tunnelWaypointIdx = 0;
+                this.flanking          = false;
+
                 this.respawn();
             }
 
@@ -1652,6 +1787,8 @@
                 
                 this.timer = 0.5 + Math.random(); this.target = null; this.targetCover = null; this.scanBaseYaw = this.isEnemy ? Math.PI : 0;
                 this.shootDelay = 0; this.trenchLevel = Math.random() > 0.5 ? 'front' : 'back'; this.crouchT = 1.0; this.aimT = 0.0;
+                this.isTunneling = false; this.goingToTunnel = false; this.tunnelEntryTarget = null;
+                this.tunnelPath = null; this.tunnelWaypointIdx = 0; this.flanking = false;
                 
                 const team = this.isEnemy ? enemies : allies;
                 let livingCount = 0;
@@ -1671,6 +1808,18 @@
 
                 this.pickCover(true);
                 this.mesh.position.set(this.targetCover.x, getTerrainHeight(this.targetCover.x, this.targetCover.z), this.targetCover.z);
+            }
+
+            _startTunneling() {
+                const routes = this.isEnemy ? ENEMY_TUNNEL_ROUTES : ALLY_TUNNEL_ROUTES;
+                const entryX = this.tunnelEntryTarget.x;
+                const routeSet = entryX < 0 ? routes.left : routes.right;
+                this.tunnelPath = routeSet[Math.floor(Math.random() * routeSet.length)];
+                this.tunnelWaypointIdx = 0;
+                this.isTunneling = true;
+                this.goingToTunnel = false;
+                this.tunnelEntryTarget = null;
+                this.state = 'tunneling';
             }
 
             alert(attacker) {
@@ -1852,63 +2001,67 @@
 
                 switch (this.state) {
                     case 'moving':
-                        targetCrouch = 0.5; 
+                        targetCrouch = 0.5;
                         const moveSpeed = 4.5;
-                        
-                        let destX = this.targetCover.x;
-                        let destZ = this.targetCover.z;
+
+                        let destX = this.goingToTunnel ? this.tunnelEntryTarget.x : this.targetCover.x;
+                        let destZ = this.goingToTunnel ? this.tunnelEntryTarget.z : this.targetCover.z;
                         let curX = this.mesh.position.x;
                         let curZ = this.mesh.position.z;
-                        
+
                         let tempX = destX;
                         let tempZ = destZ;
 
-                        const isHome = (z) => Math.abs(z) >= 17;
-                        const isMid = (z) => Math.abs(z) <= 5;
-                        const isPath = (z) => Math.abs(z) > 5 && Math.abs(z) < 17;
-                        const getPathX = (x) => (Math.abs(x - (-40)) < Math.abs(x - 40)) ? -40 : 40;
-                        
-                        if (isHome(curZ) && !isHome(destZ)) {
-                            let px = getPathX(curX);
-                            if (Math.abs(curX - px) > 1.0) { tempX = px; tempZ = curZ; } 
-                            else { tempX = px; tempZ = destZ; }
-                        } else if (isMid(curZ) && !isMid(destZ)) {
-                            let px = getPathX(curX);
-                            if (Math.abs(curX - px) > 1.0) { tempX = px; tempZ = curZ; } 
-                            else { tempX = px; tempZ = destZ; }
-                        } else if (isPath(curZ)) {
-                            if (isHome(destZ)) {
-                                let safeZ = destZ > 0 ? 19.5 : -19.5;
-                                if (Math.abs(destZ) > 26) safeZ = destZ > 0 ? 28 : -28; 
-                                if (Math.abs(curZ - safeZ) > 1.0) { tempX = curX; tempZ = safeZ; } 
-                                else { tempX = destX; tempZ = destZ; }
-                            } else if (isMid(destZ)) {
-                                if (Math.abs(curZ) > 1.0) { tempX = curX; tempZ = 0; } 
-                                else { tempX = destX; tempZ = destZ; }
+                        if (!this.goingToTunnel) {
+                            const isHome = (z) => Math.abs(z) >= 17;
+                            const isMid = (z) => Math.abs(z) <= 5;
+                            const isPath = (z) => Math.abs(z) > 5 && Math.abs(z) < 17;
+                            const getPathX = (x) => (Math.abs(x - (-40)) < Math.abs(x - 40)) ? -40 : 40;
+
+                            if (isHome(curZ) && !isHome(destZ)) {
+                                let px = getPathX(curX);
+                                if (Math.abs(curX - px) > 1.0) { tempX = px; tempZ = curZ; }
+                                else { tempX = px; tempZ = destZ; }
+                            } else if (isMid(curZ) && !isMid(destZ)) {
+                                let px = getPathX(curX);
+                                if (Math.abs(curX - px) > 1.0) { tempX = px; tempZ = curZ; }
+                                else { tempX = px; tempZ = destZ; }
+                            } else if (isPath(curZ)) {
+                                if (isHome(destZ)) {
+                                    let safeZ = destZ > 0 ? 19.5 : -19.5;
+                                    if (Math.abs(destZ) > 26) safeZ = destZ > 0 ? 28 : -28;
+                                    if (Math.abs(curZ - safeZ) > 1.0) { tempX = curX; tempZ = safeZ; }
+                                    else { tempX = destX; tempZ = destZ; }
+                                } else if (isMid(destZ)) {
+                                    if (Math.abs(curZ) > 1.0) { tempX = curX; tempZ = 0; }
+                                    else { tempX = destX; tempZ = destZ; }
+                                }
                             }
                         }
-                        
+
                         let dx = tempX - curX;
                         let dz = tempZ - curZ;
                         let dist = Math.sqrt(dx*dx + dz*dz);
-                        
+
                         let finalDx = destX - curX;
                         let finalDz = destZ - curZ;
                         let finalDist = Math.sqrt(finalDx*finalDx + finalDz*finalDz);
-                        
-                        if (finalDist < 0.2) {
-                            if (this.targetCover && this.targetCover.isTurret) {
-                                this.state = 'hidden'; 
+
+                        if (finalDist < (this.goingToTunnel ? 0.6 : 0.2)) {
+                            if (this.goingToTunnel) {
+                                this._startTunneling();
+                            } else if (this.targetCover && this.targetCover.isTurret) {
+                                this.state = 'hidden';
                                 this.timer = 0.1; // short delay before grabbing it
                             } else {
                                 this.state = 'hidden';
                                 this.timer = 0.2 + Math.random() * 0.3;
                             }
                         } else {
-                            if (dist < 0.1) { dx = finalDx; dz = finalDz; dist = finalDist; } 
+                            if (dist < 0.1) { dx = finalDx; dz = finalDz; dist = finalDist; }
                             this.mesh.position.x += (dx/dist) * moveSpeed * dt;
                             this.mesh.position.z += (dz/dist) * moveSpeed * dt;
-                            
+
                             const targetYaw = Math.atan2(dx, dz);
                             let diff = targetYaw - this.mesh.rotation.y;
                             while (diff < -Math.PI) diff += Math.PI * 2; while (diff > Math.PI) diff -= Math.PI * 2;
@@ -1916,9 +2069,15 @@
                         }
                         break;
                     case 'hidden':
-                        targetCrouch = 1.0; 
-                        if (this.timer <= 0) { 
-                            if (this.targetCover && this.targetCover.isTurret) {
+                        targetCrouch = 1.0;
+                        if (this.timer <= 0) {
+                            // 15% chance for non-advancing, non-flanking AI to use tunnel
+                            if (!this.isAdvancing && !this.flanking && Math.random() < 0.15) {
+                                const myEntries = TUNNEL_ENTRIES.filter(e => e.side === (this.isEnemy ? 'enemy' : 'ally'));
+                                this.tunnelEntryTarget = myEntries[Math.floor(Math.random() * myEntries.length)];
+                                this.goingToTunnel = true;
+                                this.state = 'moving';
+                            } else if (this.targetCover && this.targetCover.isTurret) {
                                 if (!this.targetCover.turret.user || this.targetCover.turret.user === this) {
                                     this.state = 'using_turret';
                                 } else {
@@ -1926,8 +2085,8 @@
                                     this.state = 'moving';
                                 }
                             } else {
-                                this.state = 'popping'; 
-                                this.timer = 0.3; 
+                                this.state = 'popping';
+                                this.timer = 0.3;
                             }
                         }
                         break;
@@ -2057,6 +2216,37 @@
                             }
                         }
                         break;
+                    case 'tunneling':
+                        targetCrouch = 0.6;
+                        targetAim = 0.0;
+                        if (!this.tunnelPath || this.tunnelWaypointIdx >= this.tunnelPath.length) {
+                            // Safety fallback: exit tunnel
+                            this.isTunneling = false; this.flanking = true; this.state = 'aiming'; this.timer = 4.0;
+                        } else {
+                            const wp = this.tunnelPath[this.tunnelWaypointIdx];
+                            const tunDx = wp.x - this.mesh.position.x;
+                            const tunDz = wp.z - this.mesh.position.z;
+                            const tunDist = Math.sqrt(tunDx*tunDx + tunDz*tunDz);
+                            if (tunDist < 0.5) {
+                                this.tunnelWaypointIdx++;
+                                if (this.tunnelWaypointIdx >= this.tunnelPath.length) {
+                                    // Emerged on the other side — start flanking attack
+                                    this.isTunneling = false;
+                                    this.flanking = true;
+                                    this.state = 'aiming';
+                                    this.timer = 5.0 + Math.random() * 3.0;
+                                }
+                            } else {
+                                this.mesh.position.x += (tunDx / tunDist) * 4.0 * dt;
+                                this.mesh.position.z += (tunDz / tunDist) * 4.0 * dt;
+                                const tunYaw = Math.atan2(tunDx, tunDz);
+                                let tunDiff = tunYaw - this.mesh.rotation.y;
+                                while (tunDiff < -Math.PI) tunDiff += Math.PI * 2;
+                                while (tunDiff > Math.PI)  tunDiff -= Math.PI * 2;
+                                this.mesh.rotation.y += tunDiff * 8 * dt;
+                            }
+                        }
+                        break;
                 }
 
                 this.crouchT += (targetCrouch - this.crouchT) * 10 * dt;
@@ -2122,32 +2312,43 @@
                     }
                 });
 
-                let aiPos2D = { x: this.mesh.position.x, z: this.mesh.position.z };
-                resolveObstacles(aiPos2D, 0.4);
-                this.mesh.position.x = aiPos2D.x;
-                this.mesh.position.z = aiPos2D.z;
-
-                let minZ, maxZ;
-                if (this.isEnemy) {
-                    if (this.coverTier > 0) { minZ = -5.0; maxZ = 36.2; } 
-                    else if (this.trenchLevel === 'front') { minZ = 18.2; maxZ = 21.8; }
-                    else { minZ = 26.8; maxZ = 36.2; }
-                } else {
-                    if (this.coverTier > 0) { minZ = -36.2; maxZ = 5.0; }
-                    else if (this.trenchLevel === 'front') { minZ = -21.8; maxZ = -18.2; }
-                    else { minZ = -36.2; maxZ = -26.8; }
+                if (!this.isTunneling) {
+                    let aiPos2D = { x: this.mesh.position.x, z: this.mesh.position.z };
+                    resolveObstacles(aiPos2D, 0.4);
+                    this.mesh.position.x = aiPos2D.x;
+                    this.mesh.position.z = aiPos2D.z;
                 }
-                this.mesh.position.z = Math.max(minZ, Math.min(maxZ, this.mesh.position.z));
 
-                if (this.state !== 'moving' && this.state !== 'using_turret' && this.targetCover && !this.targetCover.isTurret) {
+                if (!this.isTunneling && !this.flanking) {
+                    let minZ, maxZ;
+                    if (this.isEnemy) {
+                        if (this.coverTier > 0) { minZ = -5.0; maxZ = 36.2; }
+                        else if (this.trenchLevel === 'front') { minZ = 18.2; maxZ = 21.8; }
+                        else { minZ = 26.8; maxZ = 36.2; }
+                    } else {
+                        if (this.coverTier > 0) { minZ = -36.2; maxZ = 5.0; }
+                        else if (this.trenchLevel === 'front') { minZ = -21.8; maxZ = -18.2; }
+                        else { minZ = -36.2; maxZ = -26.8; }
+                    }
+                    this.mesh.position.z = Math.max(minZ, Math.min(maxZ, this.mesh.position.z));
+                }
+
+                if (!this.isTunneling && this.state !== 'moving' && this.state !== 'using_turret' && this.targetCover && !this.targetCover.isTurret) {
                     this.mesh.position.x += (this.targetCover.x - this.mesh.position.x) * 2 * dt;
                     this.mesh.position.z += (this.targetCover.z - this.mesh.position.z) * 2 * dt;
                 }
 
-                this.mesh.position.y = getTerrainHeight(this.mesh.position.x, this.mesh.position.z);
+                this.mesh.position.y = this.isTunneling
+                    ? TUNNEL_FLOOR_Y
+                    : getTerrainHeight(this.mesh.position.x, this.mesh.position.z);
             }
 
             calculateExposure(target) {
+                // Underground entities are invisible to surface entities and vice versa
+                if (this.isTunneling) return 0;
+                if (target.isPlayer && playerTunnelActive) return 0;
+                if (!target.isPlayer && target.isTunneling) return 0;
+
                 const heightOffset = 1.55 - (this.crouchT * 0.45);
                 const eyeStart = this.mesh.position.clone().add(new THREE.Vector3(0, heightOffset, 0));
                 const pointsToCheck = [];
@@ -2652,22 +2853,54 @@
                     if (nextPos.z < -36.3 + pr) nextPos.z = -36.3 + pr; if (nextPos.z > 36.3 - pr) nextPos.z = 36.3 - pr;
                     if (nextPos.x < -95 + pr) nextPos.x = -95 + pr; if (nextPos.x > 95 - pr) nextPos.x = 95 - pr;
 
-                    let pPos2D = { x: nextPos.x, z: nextPos.z };
-                    resolveObstacles(pPos2D, pr);
-                    nextPos.x = pPos2D.x; nextPos.z = pPos2D.z;
+                    if (!playerTunnelActive) {
+                        let pPos2D = { x: nextPos.x, z: nextPos.z };
+                        resolveObstacles(pPos2D, pr);
+                        nextPos.x = pPos2D.x; nextPos.z = pPos2D.z;
 
-                    const allLivingAI = [...allies, ...enemies].filter(a => !a.dead);
-                    allLivingAI.forEach(ai => {
-                        let dx = nextPos.x - ai.mesh.position.x; let dz = nextPos.z - ai.mesh.position.z; let distSq = dx * dx + dz * dz;
-                        let minDist = 0.8; 
-                        if (distSq < minDist * minDist && distSq > 0.0001) {
-                            let dist = Math.sqrt(distSq); let overlap = minDist - dist;
-                            nextPos.x += (dx / dist) * overlap; nextPos.z += (dz / dist) * overlap;
-                        }
-                    });
+                        const allLivingAI = [...allies, ...enemies].filter(a => !a.dead);
+                        allLivingAI.forEach(ai => {
+                            let dx = nextPos.x - ai.mesh.position.x; let dz = nextPos.z - ai.mesh.position.z; let distSq = dx * dx + dz * dz;
+                            let minDist = 0.8;
+                            if (distSq < minDist * minDist && distSq > 0.0001) {
+                                let dist = Math.sqrt(distSq); let overlap = minDist - dist;
+                                nextPos.x += (dx / dist) * overlap; nextPos.z += (dz / dist) * overlap;
+                            }
+                        });
+                    }
 
                     playerRoot.position.copy(nextPos);
-                    playerRoot.position.y = getTerrainHeight(playerRoot.position.x, playerRoot.position.z);
+
+                    // --- Tunnel entry detection ---
+                    if (!playerTunnelActive) {
+                        for (const e of TUNNEL_ENTRIES) {
+                            const dx = playerRoot.position.x - e.x;
+                            const dz = playerRoot.position.z - e.z;
+                            if (dx*dx + dz*dz < 2.5 * 2.5) {
+                                playerTunnelActive = true;
+                                playerTunnelCooldown = 2.5;
+                                break;
+                            }
+                        }
+                    }
+
+                    // --- In-tunnel constraints ---
+                    if (playerTunnelActive) {
+                        playerTunnelCooldown = Math.max(0, playerTunnelCooldown - dt);
+                        playerRoot.position.y = TUNNEL_FLOOR_Y;
+                        if (playerTunnelCooldown <= 0) {
+                            for (const e of TUNNEL_ENTRIES) {
+                                const dx = playerRoot.position.x - e.x;
+                                const dz = playerRoot.position.z - e.z;
+                                if (dx*dx + dz*dz < 3.0 * 3.0) {
+                                    playerTunnelActive = false;
+                                    break;
+                                }
+                            }
+                        }
+                    } else {
+                        playerRoot.position.y = getTerrainHeight(playerRoot.position.x, playerRoot.position.z);
+                    }
                 } else {
                     // Lock lean object dead-center onto the turret's swivel pivot point
                     leanObject.position.x += (0 - leanObject.position.x) * 15 * dt;
@@ -2694,6 +2927,14 @@
                     mountedTurret.pitchGroup.rotation.x = pitch;
                 }
                 
+                // --- UPDATE TUNNEL HUD ---
+                document.getElementById('tunnelIndicator').style.display = playerTunnelActive ? 'block' : 'none';
+                const nearTunnel = !playerTunnelActive && TUNNEL_ENTRIES.some(e => {
+                    const dx = playerRoot.position.x - e.x, dz = playerRoot.position.z - e.z;
+                    return dx*dx + dz*dz < 16.0; // 4-unit hint radius
+                });
+                document.getElementById('tunnelHint').style.display = nearTunnel ? 'block' : 'none';
+
                 // --- UPDATE WEAPON UI ---
                 const weaponInd = document.getElementById('weapon-indicator');
                 if (mountedTurret) {
