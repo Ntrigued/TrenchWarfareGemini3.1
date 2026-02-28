@@ -501,7 +501,7 @@
                 if(this.targetCover&&this.targetCover.isTurret&&this.targetCover.turret.user===this)this.targetCover.turret.user=null;
                 this.isCrawling=false; this.crawlT=0.0; this.retreatCooldown=0; this.timer=0.5+Math.random(); this.target=null; this.targetCover=null; this.scanBaseYaw=this.isEnemy?Math.PI:0; this.shootDelay=0;
                 const t=this.isEnemy?enemies:allies; let lC=0, adv=0; for(let i=0;i<t.length;i++){ if(!t[i].dead&&t[i]!==this){lC++; if(t[i].isAdvancing)adv++;} } lC++; 
-                this.isAdvancing=(adv/lC)<0.6; this.coverTier=Math.floor(Math.random()*2); this.interruptedMove=false; this.pickCover(true);
+                this.isAdvancing=(adv/lC)<0.5; this.coverTier=this.isAdvancing?(3+Math.floor(Math.random()*2)):0; this.interruptedMove=false; this.pickCover(true);
                 if(this.targetCover)this.mesh.position.set(this.targetCover.x,getTerrainHeight(this.targetCover.x,this.targetCover.z),this.targetCover.z);
             }
 
@@ -604,7 +604,7 @@
                         break;
                     case 'shooting':
                         tCr=isC?0.0:1.0; tAm=1.0; if(!this.target||this.target.dead||!this.checkLOS(this.target)){this.state='hidden'; this.timer=0.5+Math.random(); break;} this.aimAtTarget(dt);
-                        if(this.timer<=0){ this.shoot(); this.shotsFired++; this.timer=0.15+Math.random()*0.15; if(this.shotsFired>=this.shotsToFire){ if(this.interruptedMove){this.interruptedMove=false; this.state='moving';} else if(this.isAdvancing&&this.coverTier<7&&Math.random()<0.95){this.coverTier++; this.pickCover(); this.state='moving';} else if(this.isAdvancing&&Math.random()<0.2){this.pickCover(); this.state='moving';} else { if(!this.isAdvancing){ let lV=0, aV=0; (this.isEnemy?enemies:allies).forEach(s=>{if(!s.dead){lV++;if(s.isAdvancing)aV++;}}); if(aV/lV<0.6)this.isAdvancing=true; } this.state='hidden'; this.timer=this.isAdvancing?(0.2+Math.random()*0.4):(0.5+Math.random()*1.0); } } }
+                        if(this.timer<=0){ this.shoot(); this.shotsFired++; this.timer=0.15+Math.random()*0.15; if(this.shotsFired>=this.shotsToFire){ if(this.interruptedMove){this.interruptedMove=false; this.state='moving';} else if(this.isAdvancing&&this.coverTier<7&&Math.random()<0.95){this.coverTier++; this.pickCover(); this.state='moving';} else if(this.isAdvancing&&Math.random()<0.2){this.pickCover(); this.state='moving';} else { if(!this.isAdvancing){ let lV=0, aV=0; (this.isEnemy?enemies:allies).forEach(s=>{if(!s.dead){lV++;if(s.isAdvancing)aV++;}}); if(aV/lV<0.5)this.isAdvancing=true; } this.state='hidden'; this.timer=this.isAdvancing?(0.2+Math.random()*0.4):(0.5+Math.random()*1.0); } } }
                         break;
                 }
 
