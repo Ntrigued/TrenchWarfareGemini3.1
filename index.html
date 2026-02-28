@@ -1950,8 +1950,8 @@
                         }
                         break;
                     case 'hidden':
-                        targetCrouch = 1.0; 
-                        if (this.timer <= 0) { 
+                        targetCrouch = 1.0;
+                        if (this.timer <= 0) {
                             if (this.targetCover && this.targetCover.isTurret) {
                                 if (!this.targetCover.turret.user || this.targetCover.turret.user === this) {
                                     this.state = 'using_turret';
@@ -1959,9 +1959,14 @@
                                     this.pickCover();
                                     this.state = 'moving';
                                 }
+                            } else if (this.isAdvancing && this.coverTier < 3 && !this.findTarget()) {
+                                // No visible target — push forward immediately without wasting time popping
+                                this.coverTier++;
+                                this.pickCover();
+                                this.state = 'moving';
                             } else {
-                                this.state = 'popping'; 
-                                this.timer = 0.3; 
+                                this.state = 'popping';
+                                this.timer = 0.3;
                             }
                         }
                         break;
@@ -2053,7 +2058,16 @@
                         } else {
                             this.target = this.findTarget(); this.shootDelay = 0.1 + Math.random() * 0.2;
                             this.mesh.rotation.y = this.scanBaseYaw + Math.sin(performance.now() * 0.002 + this.mesh.id) * 0.5;
-                            if (this.timer <= 0) { this.state = 'hidden'; this.timer = 0.5 + Math.random(); }
+                            if (this.timer <= 0) {
+                                if (this.isAdvancing && this.coverTier < 3) {
+                                    // No target found after scanning — keep pressing forward
+                                    this.coverTier++;
+                                    this.pickCover();
+                                    this.state = 'moving';
+                                } else {
+                                    this.state = 'hidden'; this.timer = 0.5 + Math.random();
+                                }
+                            }
                         }
                         break;
                     case 'shooting':
@@ -2163,11 +2177,13 @@
 
                 let minZ, maxZ;
                 if (this.isEnemy) {
-                    if (this.coverTier > 0) { minZ = -5.0; maxZ = 36.2; } 
+                    if (this.coverTier === 3) { minZ = -22.0; maxZ = 36.2; } // pushing into ally trench
+                    else if (this.coverTier > 0) { minZ = -5.0; maxZ = 36.2; }
                     else if (this.trenchLevel === 'front') { minZ = 18.2; maxZ = 21.8; }
                     else { minZ = 26.8; maxZ = 36.2; }
                 } else {
-                    if (this.coverTier > 0) { minZ = -36.2; maxZ = 5.0; }
+                    if (this.coverTier === 3) { minZ = -36.2; maxZ = 22.0; } // pushing into enemy trench
+                    else if (this.coverTier > 0) { minZ = -36.2; maxZ = 5.0; }
                     else if (this.trenchLevel === 'front') { minZ = -21.8; maxZ = -18.2; }
                     else { minZ = -36.2; maxZ = -26.8; }
                 }
