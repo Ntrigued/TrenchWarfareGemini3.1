@@ -1572,21 +1572,25 @@
                 if (this.isEnemy) {
                     if (this.coverTier === 1) return enemyPathCovers;
                     if (this.coverTier === 2) return midCoversEnemy;
+                    if (this.coverTier === 3) return allyCoversFront; // enemy front trench
+                    if (this.coverTier === 4) return allyCoversBack;  // all the way to ally back trench
                     return this.trenchLevel === 'front' ? enemyCoversFront : enemyCoversBack;
                 } else {
                     if (this.coverTier === 1) return allyPathCovers;
                     if (this.coverTier === 2) return midCoversAlly;
+                    if (this.coverTier === 3) return enemyCoversFront; // enemy front trench
+                    if (this.coverTier === 4) return enemyCoversBack;  // all the way to enemy back trench
                     return this.trenchLevel === 'front' ? allyCoversFront : allyCoversBack;
                 }
             }
 
             pickCover(isSpawning = false) {
                 const peers = this.isEnemy ? enemies : allies;
-                
+
                 // Priority: Non-advancing soldiers should always try to man an empty turret first
                 if (!this.isAdvancing) {
                     const backCovers = this.isEnemy ? enemyCoversBack : allyCoversBack;
-                    
+
                     // Check if a friendly is already manning (or heading to) ANY turret on this side
                     let friendlyOnTurret = backCovers.some(c => {
                         if (!c.isTurret) return false;
@@ -1598,11 +1602,11 @@
                     if (!friendlyOnTurret) {
                         let emptyTurrets = backCovers.filter(c => {
                             if (!c.isTurret) return false;
-                            if (c.turret.user && c.turret.user !== this && !c.turret.user.dead) return false; // In use by player or other AI
-                            if (peers.some(p => p !== this && !p.dead && p.targetCover === c)) return false; // Claimed by another AI heading towards it
+                            if (c.turret.user && c.turret.user !== this && !c.turret.user.dead) return false;
+                            if (peers.some(p => p !== this && !p.dead && p.targetCover === c)) return false;
                             return true;
                         });
-                        
+
                         if (emptyTurrets.length > 0) {
                             let safeTurrets = emptyTurrets;
                             if (isSpawning) {
@@ -1615,28 +1619,68 @@
                             return;
                         }
                     }
+
+                    // Defenders: recursively try back trench, then front trench.
+                    // If neither has room, force advance so the AI doesn't get stuck.
+                    const tryTrench = (level) => {
+                        const covers = level === 'back'
+                            ? (this.isEnemy ? enemyCoversBack : allyCoversBack)
+                            : (this.isEnemy ? enemyCoversFront : allyCoversFront);
+
+                        let available = covers.filter(c => {
+                            if (c.isTurret && c.turret.user && c.turret.user !== this) return false;
+                            return !peers.some(p => p !== this && !p.dead && p.targetCover === c);
+                        });
+
+                        if (available.length > 0) {
+                            this.trenchLevel = level;
+                            this.coverTier = 0;
+                            if (isSpawning) {
+                                let safe = available.filter(c => !isSpotVisibleToPlayer(c));
+                                if (safe.length > 0) available = safe;
+                            }
+                            this.targetCover = available[Math.floor(Math.random() * available.length)];
+                            return true;
+                        }
+
+                        // Current trench is full — try the next one forward
+                        if (level === 'back') return tryTrench('front');
+
+                        // Both trenches full: become an advancer and fall through to advancing logic
+                        this.isAdvancing = true;
+                        this.coverTier = 0;
+                        return false;
+                    };
+
+                    if (tryTrench('back')) return;
+                    // isAdvancing was set to true above; fall through to advancing cover selection
                 }
 
+                // Advancing AI: use tier-based cover selection
                 let covers = this.getDesiredCovers();
-                
-                // Exclude covers taken by alive peers, AND turrets currently occupied by ANYONE
+
                 let available = covers.filter(c => {
                     if (c.isTurret && c.turret.user && c.turret.user !== this) return false;
                     return !peers.some(p => p !== this && !p.dead && p.targetCover === c);
                 });
-                
-                if (available.length === 0) available = covers; // fallback if crowded
-                
+
+                if (available.length === 0) {
+                    // All covers claimed — pick the one fewest peers are already heading to
+                    const occupancy = covers.map(c => ({
+                        cover: c,
+                        count: peers.filter(p => p !== this && !p.dead && p.targetCover === c).length
+                    }));
+                    const minCount = Math.min(...occupancy.map(o => o.count));
+                    available = occupancy.filter(o => o.count === minCount).map(o => o.cover);
+                }
+
                 if (isSpawning) {
-                    // Filter out spots the player is actively looking at to prevent pop-in ONLY when spawning
                     let safeAvailable = available.filter(c => !isSpotVisibleToPlayer(c));
-                    
-                    // Only use the safe list if there are actually hidden spots available. 
                     if (safeAvailable.length > 0) {
                         available = safeAvailable;
                     }
                 }
-                
+
                 this.targetCover = available[Math.floor(Math.random() * available.length)];
             }
 
@@ -1664,8 +1708,8 @@
                 }
                 livingCount++; 
                 
-                // Keep higher push rate so the middle sees a steady stream of action
-                this.isAdvancing = (advancers / livingCount) < 0.4;
+                // 50/50 split: half advance, half defend
+                this.isAdvancing = (advancers / livingCount) < 0.5;
                 this.coverTier = 0;
                 this.interruptedMove = false;
 
@@ -1916,8 +1960,8 @@
                         }
                         break;
                     case 'hidden':
-                        targetCrouch = 1.0; 
-                        if (this.timer <= 0) { 
+                        targetCrouch = 1.0;
+                        if (this.timer <= 0) {
                             if (this.targetCover && this.targetCover.isTurret) {
                                 if (!this.targetCover.turret.user || this.targetCover.turret.user === this) {
                                     this.state = 'using_turret';
@@ -1925,9 +1969,14 @@
                                     this.pickCover();
                                     this.state = 'moving';
                                 }
+                            } else if (this.isAdvancing && this.coverTier < 4 && !this.findTarget()) {
+                                // No visible target — push forward immediately without wasting time popping
+                                this.coverTier++;
+                                this.pickCover();
+                                this.state = 'moving';
                             } else {
-                                this.state = 'popping'; 
-                                this.timer = 0.3; 
+                                this.state = 'popping';
+                                this.timer = 0.3;
                             }
                         }
                         break;
@@ -2019,7 +2068,16 @@
                         } else {
                             this.target = this.findTarget(); this.shootDelay = 0.1 + Math.random() * 0.2;
                             this.mesh.rotation.y = this.scanBaseYaw + Math.sin(performance.now() * 0.002 + this.mesh.id) * 0.5;
-                            if (this.timer <= 0) { this.state = 'hidden'; this.timer = 0.5 + Math.random(); }
+                            if (this.timer <= 0) {
+                                if (this.isAdvancing && this.coverTier < 4) {
+                                    // No target found after scanning — keep pressing forward
+                                    this.coverTier++;
+                                    this.pickCover();
+                                    this.state = 'moving';
+                                } else {
+                                    this.state = 'hidden'; this.timer = 0.5 + Math.random();
+                                }
+                            }
                         }
                         break;
                     case 'shooting':
@@ -2034,7 +2092,7 @@
                                 if (this.interruptedMove) {
                                     this.interruptedMove = false;
                                     this.state = 'moving';
-                                } else if (this.isAdvancing && this.coverTier < 2 && Math.random() < 0.95) {
+                                } else if (this.isAdvancing && this.coverTier < 4 && Math.random() < 0.95) {
                                     this.coverTier++;
                                     this.pickCover();
                                     this.state = 'moving';
@@ -2046,8 +2104,8 @@
                                         const team = this.isEnemy ? enemies : allies;
                                         let living = 0, adv = 0;
                                         team.forEach(s => { if (!s.dead) { living++; if (s.isAdvancing) adv++; } });
-                                        if (adv / living < 0.4) {
-                                            this.isAdvancing = true; 
+                                        if (adv / living < 0.5) {
+                                            this.isAdvancing = true;
                                         }
                                     }
                                     
@@ -2129,11 +2187,15 @@
 
                 let minZ, maxZ;
                 if (this.isEnemy) {
-                    if (this.coverTier > 0) { minZ = -5.0; maxZ = 36.2; } 
+                    if (this.coverTier === 4) { minZ = -36.2; maxZ = 36.2; } // pushing into ally back trench
+                    else if (this.coverTier === 3) { minZ = -22.0; maxZ = 36.2; } // pushing into ally front trench
+                    else if (this.coverTier > 0) { minZ = -5.0; maxZ = 36.2; }
                     else if (this.trenchLevel === 'front') { minZ = 18.2; maxZ = 21.8; }
                     else { minZ = 26.8; maxZ = 36.2; }
                 } else {
-                    if (this.coverTier > 0) { minZ = -36.2; maxZ = 5.0; }
+                    if (this.coverTier === 4) { minZ = -36.2; maxZ = 36.2; } // pushing into enemy back trench
+                    else if (this.coverTier === 3) { minZ = -36.2; maxZ = 22.0; } // pushing into enemy front trench
+                    else if (this.coverTier > 0) { minZ = -36.2; maxZ = 5.0; }
                     else if (this.trenchLevel === 'front') { minZ = -21.8; maxZ = -18.2; }
                     else { minZ = -36.2; maxZ = -26.8; }
                 }
