@@ -467,7 +467,8 @@
             const b = new THREE.Mesh(new THREE.BoxGeometry(reg.w, 1.2, reg.d), groundMat);
             b.position.set(reg.x, -0.6, reg.z);
             scene.add(b); worldMeshes.push(b);
-            collisionObstacles.push({ minX: reg.x - reg.w/2, maxX: reg.x + reg.w/2, minZ: reg.z - reg.d/2, maxZ: reg.z + reg.d/2 });
+            // No collision obstacle — these are flat floor tiles, not walls.
+            // Bullets can hit them (worldMeshes), but players/AI walk freely on top.
         });
 
         const bfA = new THREE.Mesh(new THREE.PlaneGeometry(200, 43), wallMat);
