@@ -431,36 +431,37 @@
         
         function getTerrainHeight(x, z) {
             const absZ = Math.abs(z);
-            if (absZ < 22.0) return -1.2; 
-            if (absZ >= 22.0 && absZ < 26.0) {
-                const inGap = (Math.abs(x + 60) < 4.2) || (Math.abs(x + 20) < 4.2) || 
+            if (absZ < 88.0) return -1.2;
+            if (absZ >= 88.0 && absZ < 104.0) {
+                const inGap = (Math.abs(x + 60) < 4.2) || (Math.abs(x + 20) < 4.2) ||
                               (Math.abs(x - 20) < 4.2) || (Math.abs(x - 60) < 4.2);
                 if (inGap) {
-                    return -1.2 + (2.2 * ((absZ - 22.0) / 4.0)); // Incline/Ramp
+                    return -1.2 + (2.2 * ((absZ - 88.0) / 16.0)); // Incline/Ramp
                 } else {
-                    return 1.0; 
+                    return 1.0;
                 }
             }
-            return 1.0; 
+            return 1.0;
         }
 
         const groundMat = new THREE.MeshLambertMaterial({ color: 0x3a4530 });
         const wallMat = new THREE.MeshLambertMaterial({ color: 0x4a3c2b });
         const woodMat = new THREE.MeshLambertMaterial({ color: 0x3d2817 });
 
-        const baseFloor = new THREE.Mesh(new THREE.PlaneGeometry(200, 100), groundMat);
+        const baseFloor = new THREE.Mesh(new THREE.PlaneGeometry(200, 400), groundMat);
         baseFloor.rotation.x = -Math.PI / 2;
         baseFloor.position.set(0, -1.2, 0);
         scene.add(baseFloor);
         worldMeshes.push(baseFloor);
 
+        // Floor panels cover Z ±8 to ±70, leaving a gap at the centre for the NML trench
         const nmlRegions = [
-            { x: -71.5, w: 57, z: -9.75, d: 15.5 }, 
-            { x: 0, w: 74, z: -9.75, d: 15.5 },     
-            { x: 71.5, w: 57, z: -9.75, d: 15.5 },  
-            { x: -71.5, w: 57, z: 9.75, d: 15.5 },  
-            { x: 0, w: 74, z: 9.75, d: 15.5 },      
-            { x: 71.5, w: 57, z: 9.75, d: 15.5 }    
+            { x: -71.5, w: 57, z: -39, d: 62 },
+            { x: 0,     w: 74, z: -39, d: 62 },
+            { x: 71.5,  w: 57, z: -39, d: 62 },
+            { x: -71.5, w: 57, z:  39, d: 62 },
+            { x: 0,     w: 74, z:  39, d: 62 },
+            { x: 71.5,  w: 57, z:  39, d: 62 }
         ];
         nmlRegions.forEach(reg => {
             const b = new THREE.Mesh(new THREE.BoxGeometry(reg.w, 1.2, reg.d), groundMat);
@@ -469,13 +470,13 @@
             collisionObstacles.push({ minX: reg.x - reg.w/2, maxX: reg.x + reg.w/2, minZ: reg.z - reg.d/2, maxZ: reg.z + reg.d/2 });
         });
 
-        const bfA = new THREE.Mesh(new THREE.PlaneGeometry(200, 10.75), wallMat);
-        bfA.rotation.x = -Math.PI / 2; bfA.position.set(0, 1.0, -31.375);
-        const bfE = new THREE.Mesh(new THREE.PlaneGeometry(200, 10.75), wallMat);
-        bfE.rotation.x = -Math.PI / 2; bfE.position.set(0, 1.0, 31.375);
+        const bfA = new THREE.Mesh(new THREE.PlaneGeometry(200, 43), wallMat);
+        bfA.rotation.x = -Math.PI / 2; bfA.position.set(0, 1.0, -125.5);
+        const bfE = new THREE.Mesh(new THREE.PlaneGeometry(200, 43), wallMat);
+        bfE.rotation.x = -Math.PI / 2; bfE.position.set(0, 1.0, 125.5);
         scene.add(bfA, bfE); worldMeshes.push(bfA, bfE);
 
-        const rampGeo = new THREE.PlaneGeometry(8, 4.565);
+        const rampGeo = new THREE.PlaneGeometry(8, 18.26); // 4x deeper ramp zone (88-104)
         const gapCenters = [-60, -20, 20, 60];
         const blockCenters = [-82, -40, 0, 40, 82];
         const blockWidths = [36, 32, 32, 32, 36];
@@ -483,27 +484,27 @@
         for (let i = 0; i < blockCenters.length; i++) {
             let cx = blockCenters[i];
             let w = blockWidths[i];
-            
-            let bA = new THREE.Mesh(new THREE.BoxGeometry(w, 2.2, 4.0), groundMat);
-            bA.position.set(cx, -0.1, -24.0);
+
+            let bA = new THREE.Mesh(new THREE.BoxGeometry(w, 2.2, 16.0), groundMat);
+            bA.position.set(cx, -0.1, -96.0);
             scene.add(bA); worldMeshes.push(bA);
-            collisionObstacles.push({ minX: cx - w/2, maxX: cx + w/2, minZ: -26.0, maxZ: -22.0 });
-            
-            let bE = new THREE.Mesh(new THREE.BoxGeometry(w, 2.2, 4.0), groundMat);
-            bE.position.set(cx, -0.1, 24.0);
+            collisionObstacles.push({ minX: cx - w/2, maxX: cx + w/2, minZ: -104.0, maxZ: -88.0 });
+
+            let bE = new THREE.Mesh(new THREE.BoxGeometry(w, 2.2, 16.0), groundMat);
+            bE.position.set(cx, -0.1, 96.0);
             scene.add(bE); worldMeshes.push(bE);
-            collisionObstacles.push({ minX: cx - w/2, maxX: cx + w/2, minZ: 22.0, maxZ: 26.0 });
+            collisionObstacles.push({ minX: cx - w/2, maxX: cx + w/2, minZ: 88.0, maxZ: 104.0 });
         }
 
         for (let i = 0; i < gapCenters.length; i++) {
             let rA = new THREE.Mesh(rampGeo, groundMat);
-            rA.rotation.x = -Math.PI / 2 + 0.5028; 
-            rA.position.set(gapCenters[i], -0.1, -24.0);
+            rA.rotation.x = -Math.PI / 2 + 0.5028;
+            rA.position.set(gapCenters[i], -0.1, -96.0);
             scene.add(rA); worldMeshes.push(rA);
 
             let rE = new THREE.Mesh(rampGeo, groundMat);
-            rE.rotation.x = -Math.PI / 2 - 0.5028; 
-            rE.position.set(gapCenters[i], -0.1, 24.0);
+            rE.rotation.x = -Math.PI / 2 - 0.5028;
+            rE.position.set(gapCenters[i], -0.1, 96.0);
             scene.add(rE); worldMeshes.push(rE);
         }
 
@@ -515,21 +516,21 @@
             collisionObstacles.push({ minX: x - w/2, maxX: x + w/2, minZ: z - 0.25, maxZ: z + 0.25 });
         }
 
-        createWall(-71.5, -17.75, 57, 1.4, -0.5);
-        createWall(0, -17.75, 74, 1.4, -0.5);
-        createWall(71.5, -17.75, 57, 1.4, -0.5);
+        createWall(-71.5, -71, 57, 1.4, -0.5);
+        createWall(0,     -71, 74, 1.4, -0.5);
+        createWall(71.5,  -71, 57, 1.4, -0.5);
 
-        createWall(-71.5, 17.75, 57, 1.4, -0.5);
-        createWall(0, 17.75, 74, 1.4, -0.5);
-        createWall(71.5, 17.75, 57, 1.4, -0.5);
+        createWall(-71.5, 71, 57, 1.4, -0.5);
+        createWall(0,     71, 74, 1.4, -0.5);
+        createWall(71.5,  71, 57, 1.4, -0.5);
 
-        createWall(0, -36.75, 200, 2.0, 2.0);  
-        createWall(0, 36.75, 200, 2.0, 2.0);   
+        createWall(0, -147, 200, 2.0, 2.0);
+        createWall(0,  147, 200, 2.0, 2.0);
 
         // Add random jagged buttresses and dirt mounds to break up the flat, straight trench walls
         for(let i=0; i<50; i++) {
             let bx = (Math.random() - 0.5) * 190;
-            let bz = Math.random() > 0.5 ? (-17.5 + (Math.random() * 1.5)) : (17.5 - (Math.random() * 1.5));
+            let bz = Math.random() > 0.5 ? (-70 + (Math.random() * 1.5)) : (70 - (Math.random() * 1.5));
             if (Math.abs(bx + 60) < 5 || Math.abs(bx + 20) < 5 || Math.abs(bx - 20) < 5 || Math.abs(bx - 60) < 5) continue; // Keep ramps clear
             
             let bw = 1.0 + Math.random() * 4.0;
@@ -542,20 +543,22 @@
             collisionObstacles.push({ minX: bx - bw/2, maxX: bx + bw/2, minZ: bz - 0.6, maxZ: bz + 0.6 });
         }
 
-        const sideWallGeo = new THREE.BoxGeometry(2, 10, 80);
+        const sideWallGeo = new THREE.BoxGeometry(2, 10, 320);
         const sw1 = new THREE.Mesh(sideWallGeo, wallMat); sw1.position.set(-100, 0, 0);
         const sw2 = new THREE.Mesh(sideWallGeo, wallMat); sw2.position.set(100, 0, 0);
         scene.add(sw1, sw2); worldMeshes.push(sw1, sw2);
-        collisionObstacles.push({ minX: -101, maxX: -99, minZ: -40, maxZ: 40 });
-        collisionObstacles.push({ minX: 99, maxX: 101, minZ: -40, maxZ: 40 });
+        collisionObstacles.push({ minX: -101, maxX: -99, minZ: -160, maxZ: 160 });
+        collisionObstacles.push({ minX: 99, maxX: 101, minZ: -160, maxZ: 160 });
 
         const allyCoversFront = [], allyCoversBack = [];
         const enemyCoversFront = [], enemyCoversBack = [];
-        
+
         const allyPathCovers = [];
         const enemyPathCovers = [];
         const midCoversAlly = [];
         const midCoversEnemy = [];
+        const nmlTrenchCoversAlly = [];   // allies advance here at tier 3 (south wall of centre trench)
+        const nmlTrenchCoversEnemy = [];  // enemies advance here at tier 3 (north wall)
 
         function addCover(x, z, arr, dirZ) {
             let bw = 1.2 + Math.random() * 0.8;
@@ -571,23 +574,38 @@
             arr.push({ x: x, z: z + dirZ, y: -1.2 });
         }
 
-        // Jittered Path Covers
-        addCover(-41.5 + Math.random()*2, -12 + (Math.random()-0.5)*3, allyPathCovers, -1.2);
-        addCover(-38.5 - Math.random()*2, -6 + (Math.random()-0.5)*3, allyPathCovers, -1.2);
-        addCover(41.5 + Math.random()*2, -12 + (Math.random()-0.5)*3, allyPathCovers, -1.2);
-        addCover(38.5 - Math.random()*2, -6 + (Math.random()-0.5)*3, allyPathCovers, -1.2);
-        
-        addCover(-41.5 + Math.random()*2, 12 + (Math.random()-0.5)*3, enemyPathCovers, 1.2);
-        addCover(-38.5 - Math.random()*2, 6 + (Math.random()-0.5)*3, enemyPathCovers, 1.2);
-        addCover(41.5 + Math.random()*2, 12 + (Math.random()-0.5)*3, enemyPathCovers, 1.2);
-        addCover(38.5 - Math.random()*2, 6 + (Math.random()-0.5)*3, enemyPathCovers, 1.2);
+        // Jittered Path Covers — at the flanks (X ≈ ±40), two waypoints per side
+        addCover(-41.5 + Math.random()*2, -48 + (Math.random()-0.5)*3, allyPathCovers, -1.2);
+        addCover(-38.5 - Math.random()*2, -24 + (Math.random()-0.5)*3, allyPathCovers, -1.2);
+        addCover(41.5 + Math.random()*2, -48 + (Math.random()-0.5)*3, allyPathCovers, -1.2);
+        addCover(38.5 - Math.random()*2, -24 + (Math.random()-0.5)*3, allyPathCovers, -1.2);
 
-        // Randomized Mid-field Skirmish Covers
+        addCover(-41.5 + Math.random()*2, 48 + (Math.random()-0.5)*3, enemyPathCovers, 1.2);
+        addCover(-38.5 - Math.random()*2, 24 + (Math.random()-0.5)*3, enemyPathCovers, 1.2);
+        addCover(41.5 + Math.random()*2, 48 + (Math.random()-0.5)*3, enemyPathCovers, 1.2);
+        addCover(38.5 - Math.random()*2, 24 + (Math.random()-0.5)*3, enemyPathCovers, 1.2);
+
+        // Mid-field Skirmish Covers — outer half of no-man's land on each side
         for (let x = -90; x <= 90; x += 5 + Math.random() * 6) {
-            if (Math.abs(x + 40) < 5 || Math.abs(x - 40) < 5) continue; 
-            let zOff = (Math.random() - 0.5) * 12; // Massive vertical scatter in No Man's Land
-            if (Math.random() > 0.5) addCover(x, -2.5 + zOff, midCoversAlly, -1.2);
-            else addCover(x, 2.5 + zOff, midCoversEnemy, 1.2);
+            if (Math.abs(x + 40) < 5 || Math.abs(x - 40) < 5) continue;
+            let zOff = (Math.random() - 0.5) * 20;
+            if (Math.random() > 0.5) addCover(x, -35 + zOff, midCoversAlly, -1.2);
+            else addCover(x, 35 + zOff, midCoversEnemy, 1.2);
+        }
+
+        // --- NO MAN'S LAND CENTRE TRENCH ---
+        // Sandbag walls at Z = ±7 create a fortified shell-scrape at the map centre.
+        // Gap at the centre floor (Z -8 to +8) is already visible from the nmlRegions layout.
+        // X ≈ ±40 is kept clear so advancing AI can pass through on the flanks.
+        for (let x = -90; x <= 90; x += 4 + Math.random() * 4) {
+            if (Math.abs(x + 40) < 5 || Math.abs(x - 40) < 5) continue; // keep flank path open
+            const jx = x + (Math.random() - 0.5) * 1.5;
+
+            // South wall (allies crouch here facing enemy / +Z)
+            addCover(jx, -7 + (Math.random() - 0.5) * 0.5, nmlTrenchCoversAlly, -1.2);
+
+            // North wall (enemies crouch here facing ally / -Z)
+            addCover(jx, 7 + (Math.random() - 0.5) * 0.5, nmlTrenchCoversEnemy, 1.2);
         }
 
         // --- EXPLOSIVE TURRETS SETUP ---
@@ -741,8 +759,8 @@
                 }
             }
         }
-        buildElevatedWallAndCovers(-26.25, false);
-        buildElevatedWallAndCovers(26.25, true);
+        buildElevatedWallAndCovers(-105, false);
+        buildElevatedWallAndCovers(105, true);
 
         // Scattered messy front-line cover
         for (let x = -96; x <= 96; x += 4 + Math.random() * 3) {
@@ -750,16 +768,16 @@
             if (Math.abs(x + 40) < 4 || Math.abs(x - 40) < 4) continue; 
 
             let oxA = x + (Math.random() - 0.5) * 2;
-            addCover(oxA, -18.5 + (Math.random() - 0.5), allyCoversFront, -1.2);
+            addCover(oxA, -74 + (Math.random() - 0.5), allyCoversFront, -1.2);
 
             let oxE = x + (Math.random() - 0.5) * 2;
-            addCover(oxE, 18.5 + (Math.random() - 0.5), enemyCoversFront, 1.2);
+            addCover(oxE, 74 + (Math.random() - 0.5), enemyCoversFront, 1.2);
         }
 
         // Random chaotic debris boxes
         for (let i = 0; i < 60; i++) {
             const x = (Math.random() - 0.5) * 180;
-            const z = (Math.random() - 0.5) * 35; // Spread out across the whole mid-field
+            const z = (Math.random() - 0.5) * 140; // Spread out across the whole mid-field
             if (Math.abs(x + 40) < 4 || Math.abs(x - 40) < 4) continue;
 
             let bw = 0.8 + Math.random();
@@ -782,7 +800,7 @@
         for(let i=0; i<120; i++) {
             let cr = new THREE.Mesh(craterGeo, craterMat);
             let cx = (Math.random() - 0.5) * 190;
-            let cz = (Math.random() - 0.5) * 36; 
+            let cz = (Math.random() - 0.5) * 144;
             let s = 0.5 + Math.random() * 2;
             cr.scale.set(s, s, s);
             cr.rotation.x = -Math.PI / 2;
@@ -798,7 +816,7 @@
         for(let i = 0; i < ashCount * 3; i += 3) {
             ashPos[i] = (Math.random() - 0.5) * 200;
             ashPos[i+1] = Math.random() * 10;
-            ashPos[i+2] = (Math.random() - 0.5) * 100;
+            ashPos[i+2] = (Math.random() - 0.5) * 400;
         }
         ashGeo.setAttribute('position', new THREE.BufferAttribute(ashPos, 3));
         const ashMat = new THREE.PointsMaterial({ color: 0x666666, size: 0.15, transparent: true, opacity: 0.5 });
@@ -808,7 +826,7 @@
         const horizonLights = [];
         for(let i = 0; i < 6; i++) {
             let l = new THREE.PointLight(0xffaa55, 0, 150);
-            l.position.set((Math.random() - 0.5) * 180, 5, (i % 2 === 0 ? 1 : -1) * (40 + Math.random() * 20));
+            l.position.set((Math.random() - 0.5) * 180, 5, (i % 2 === 0 ? 1 : -1) * (160 + Math.random() * 80));
             scene.add(l);
             horizonLights.push({light: l, timer: 0});
         }
@@ -1079,7 +1097,7 @@
             
             // Randomize player spawn (Center 2/3 of map, either in trench or on parapet)
             const spawnX = (Math.random() - 0.5) * 132; 
-            let spawnZ = Math.random() > 0.5 ? (-21 + Math.random() * 3) : (-34 + Math.random() * 6);
+            let spawnZ = Math.random() > 0.5 ? (-84 + Math.random() * 12) : (-136 + Math.random() * 24);
             let spawnPos2D = { x: spawnX, z: spawnZ };
             resolveObstacles(spawnPos2D, 0.4); // Push out of any intersecting cover boxes
             
@@ -1572,14 +1590,16 @@
                 if (this.isEnemy) {
                     if (this.coverTier === 1) return enemyPathCovers;
                     if (this.coverTier === 2) return midCoversEnemy;
-                    if (this.coverTier === 3) return allyCoversFront; // enemy front trench
-                    if (this.coverTier === 4) return allyCoversBack;  // all the way to ally back trench
+                    if (this.coverTier === 3) return nmlTrenchCoversEnemy; // centre NML trench
+                    if (this.coverTier === 4) return allyCoversFront;      // ally front trench
+                    if (this.coverTier === 5) return allyCoversBack;       // all the way to ally back
                     return this.trenchLevel === 'front' ? enemyCoversFront : enemyCoversBack;
                 } else {
                     if (this.coverTier === 1) return allyPathCovers;
                     if (this.coverTier === 2) return midCoversAlly;
-                    if (this.coverTier === 3) return enemyCoversFront; // enemy front trench
-                    if (this.coverTier === 4) return enemyCoversBack;  // all the way to enemy back trench
+                    if (this.coverTier === 3) return nmlTrenchCoversAlly;  // centre NML trench
+                    if (this.coverTier === 4) return enemyCoversFront;     // enemy front trench
+                    if (this.coverTier === 5) return enemyCoversBack;      // all the way to enemy back
                     return this.trenchLevel === 'front' ? allyCoversFront : allyCoversBack;
                 }
             }
@@ -1907,27 +1927,27 @@
                         let tempX = destX;
                         let tempZ = destZ;
 
-                        const isHome = (z) => Math.abs(z) >= 17;
-                        const isMid = (z) => Math.abs(z) <= 5;
-                        const isPath = (z) => Math.abs(z) > 5 && Math.abs(z) < 17;
+                        const isHome = (z) => Math.abs(z) >= 68;  // front trench and beyond
+                        const isMid = (z) => Math.abs(z) <= 20;   // NML trench and centre
+                        const isPath = (z) => Math.abs(z) > 20 && Math.abs(z) < 68;
                         const getPathX = (x) => (Math.abs(x - (-40)) < Math.abs(x - 40)) ? -40 : 40;
-                        
+
                         if (isHome(curZ) && !isHome(destZ)) {
                             let px = getPathX(curX);
-                            if (Math.abs(curX - px) > 1.0) { tempX = px; tempZ = curZ; } 
+                            if (Math.abs(curX - px) > 1.0) { tempX = px; tempZ = curZ; }
                             else { tempX = px; tempZ = destZ; }
                         } else if (isMid(curZ) && !isMid(destZ)) {
                             let px = getPathX(curX);
-                            if (Math.abs(curX - px) > 1.0) { tempX = px; tempZ = curZ; } 
+                            if (Math.abs(curX - px) > 1.0) { tempX = px; tempZ = curZ; }
                             else { tempX = px; tempZ = destZ; }
                         } else if (isPath(curZ)) {
                             if (isHome(destZ)) {
-                                let safeZ = destZ > 0 ? 19.5 : -19.5;
-                                if (Math.abs(destZ) > 26) safeZ = destZ > 0 ? 28 : -28; 
-                                if (Math.abs(curZ - safeZ) > 1.0) { tempX = curX; tempZ = safeZ; } 
+                                let safeZ = destZ > 0 ? 78 : -78;
+                                if (Math.abs(destZ) > 104) safeZ = destZ > 0 ? 112 : -112;
+                                if (Math.abs(curZ - safeZ) > 1.0) { tempX = curX; tempZ = safeZ; }
                                 else { tempX = destX; tempZ = destZ; }
                             } else if (isMid(destZ)) {
-                                if (Math.abs(curZ) > 1.0) { tempX = curX; tempZ = 0; } 
+                                if (Math.abs(curZ) > 1.0) { tempX = curX; tempZ = 0; }
                                 else { tempX = destX; tempZ = destZ; }
                             }
                         }
@@ -1969,7 +1989,7 @@
                                     this.pickCover();
                                     this.state = 'moving';
                                 }
-                            } else if (this.isAdvancing && this.coverTier < 4 && !this.findTarget()) {
+                            } else if (this.isAdvancing && this.coverTier < 5 && !this.findTarget()) {
                                 // No visible target — push forward immediately without wasting time popping
                                 this.coverTier++;
                                 this.pickCover();
@@ -2069,7 +2089,7 @@
                             this.target = this.findTarget(); this.shootDelay = 0.1 + Math.random() * 0.2;
                             this.mesh.rotation.y = this.scanBaseYaw + Math.sin(performance.now() * 0.002 + this.mesh.id) * 0.5;
                             if (this.timer <= 0) {
-                                if (this.isAdvancing && this.coverTier < 4) {
+                                if (this.isAdvancing && this.coverTier < 5) {
                                     // No target found after scanning — keep pressing forward
                                     this.coverTier++;
                                     this.pickCover();
@@ -2092,7 +2112,7 @@
                                 if (this.interruptedMove) {
                                     this.interruptedMove = false;
                                     this.state = 'moving';
-                                } else if (this.isAdvancing && this.coverTier < 4 && Math.random() < 0.95) {
+                                } else if (this.isAdvancing && this.coverTier < 5 && Math.random() < 0.95) {
                                     this.coverTier++;
                                     this.pickCover();
                                     this.state = 'moving';
@@ -2187,17 +2207,17 @@
 
                 let minZ, maxZ;
                 if (this.isEnemy) {
-                    if (this.coverTier === 4) { minZ = -36.2; maxZ = 36.2; } // pushing into ally back trench
-                    else if (this.coverTier === 3) { minZ = -22.0; maxZ = 36.2; } // pushing into ally front trench
-                    else if (this.coverTier > 0) { minZ = -5.0; maxZ = 36.2; }
-                    else if (this.trenchLevel === 'front') { minZ = 18.2; maxZ = 21.8; }
-                    else { minZ = 26.8; maxZ = 36.2; }
+                    if (this.coverTier === 5) { minZ = -144.8; maxZ = 144.8; }       // ally back trench
+                    else if (this.coverTier === 4) { minZ = -88.0; maxZ = 144.8; }   // ally front trench
+                    else if (this.coverTier > 0) { minZ = -20.0; maxZ = 144.8; }     // NML + path/mid
+                    else if (this.trenchLevel === 'front') { minZ = 72.8; maxZ = 87.2; }
+                    else { minZ = 107.2; maxZ = 144.8; }
                 } else {
-                    if (this.coverTier === 4) { minZ = -36.2; maxZ = 36.2; } // pushing into enemy back trench
-                    else if (this.coverTier === 3) { minZ = -36.2; maxZ = 22.0; } // pushing into enemy front trench
-                    else if (this.coverTier > 0) { minZ = -36.2; maxZ = 5.0; }
-                    else if (this.trenchLevel === 'front') { minZ = -21.8; maxZ = -18.2; }
-                    else { minZ = -36.2; maxZ = -26.8; }
+                    if (this.coverTier === 5) { minZ = -144.8; maxZ = 144.8; }       // enemy back trench
+                    else if (this.coverTier === 4) { minZ = -144.8; maxZ = 88.0; }   // enemy front trench
+                    else if (this.coverTier > 0) { minZ = -144.8; maxZ = 20.0; }     // NML + path/mid
+                    else if (this.trenchLevel === 'front') { minZ = -87.2; maxZ = -72.8; }
+                    else { minZ = -144.8; maxZ = -107.2; }
                 }
                 this.mesh.position.z = Math.max(minZ, Math.min(maxZ, this.mesh.position.z));
 
