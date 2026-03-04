@@ -1122,9 +1122,17 @@
         const mgBipodR = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.16), new THREE.MeshLambertMaterial({ color: 0x111111 }));
         mgBipodR.position.set(0.04, -0.07, -0.8);
         mgBipodR.rotation.z = -0.2;
-        const mgFSight = new THREE.Mesh(new THREE.BoxGeometry(0.005, 0.062, 0.01), new THREE.MeshLambertMaterial({ color: 0x111111 }));
-        mgFSight.position.set(0, 0.049, -0.85);
-        modelMG.add(mgBarrel, mgCoolJacket, mgCoolTip, mgReceiver, mgPanMag, mgPanHub, mgStock, mgBipodL, mgBipodR, mgFSight);
+        // Front sight: blade post sitting on top of the cooling jacket (jacket top is at y=0.034)
+        // Placed at z=-0.78 where the main jacket is still full-radius, clear of the tapered tip
+        const mgFSightPost = new THREE.Mesh(new THREE.BoxGeometry(0.007, 0.048, 0.008), new THREE.MeshLambertMaterial({ color: 0x111111 }));
+        mgFSightPost.position.set(0, 0.058, -0.78); // bottom at y=0.034 (jacket top), tip at y=0.082
+        // Rear notch sight: two posts flanking a notch, sitting on the receiver top (y=0.05), behind the pan mag
+        // With alignY=-0.08, tips at y=0.082 land at y≈0 in camera space when aiming — crosshair-aligned
+        const mgRSightL = new THREE.Mesh(new THREE.BoxGeometry(0.009, 0.032, 0.01), new THREE.MeshLambertMaterial({ color: 0x111111 }));
+        mgRSightL.position.set(-0.013, 0.066, 0.06); // bottom at y=0.05, tip at y=0.082
+        const mgRSightR = new THREE.Mesh(new THREE.BoxGeometry(0.009, 0.032, 0.01), new THREE.MeshLambertMaterial({ color: 0x111111 }));
+        mgRSightR.position.set( 0.013, 0.066, 0.06); // tip at y=0.082 — matches front sight tip ✓
+        modelMG.add(mgBarrel, mgCoolJacket, mgCoolTip, mgReceiver, mgPanMag, mgPanHub, mgStock, mgBipodL, mgBipodR, mgFSightPost, mgRSightL, mgRSightR);
 
         // --- Sniper rifle model ---
         const modelSniper  = new THREE.Group();
