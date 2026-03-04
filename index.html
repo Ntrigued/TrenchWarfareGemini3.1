@@ -1107,12 +1107,10 @@
         mgCoolTip.position.set(0, 0, -0.85);
         const mgReceiver = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.08, 0.35), new THREE.MeshLambertMaterial({ color: 0x111111 }));
         mgReceiver.position.set(0, 0.01, -0.1);
-        // Top-mounted circular pan magazine (holds 47 rounds — the Lewis Gun's signature silhouette)
-        const mgPanMag = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.03, 20), new THREE.MeshLambertMaterial({ color: 0x222222 }));
-        mgPanMag.position.set(0, 0.08, -0.15);
-        // Central hub of the pan
-        const mgPanHub = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.045, 10), new THREE.MeshLambertMaterial({ color: 0x1a1a1a }));
-        mgPanHub.position.set(0, 0.098, -0.15);
+        // Top-mounted pan magazine — radius and height reduced so its top (y=0.056) sits
+        // below the sight line (y=0.082), keeping ADS view clear
+        const mgPanMag = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.022, 20), new THREE.MeshLambertMaterial({ color: 0x222222 }));
+        mgPanMag.position.set(0, 0.045, -0.15);
         const mgStock  = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.1, 0.3), new THREE.MeshLambertMaterial({ color: 0x3a2e15 }));
         mgStock.position.set(0, -0.02, 0.15);
         // Split bipod legs (spread slightly for stability)
@@ -1132,7 +1130,7 @@
         mgRSightL.position.set(-0.013, 0.066, 0.06); // bottom at y=0.05, tip at y=0.082
         const mgRSightR = new THREE.Mesh(new THREE.BoxGeometry(0.009, 0.032, 0.01), new THREE.MeshLambertMaterial({ color: 0x111111 }));
         mgRSightR.position.set( 0.013, 0.066, 0.06); // tip at y=0.082 — matches front sight tip ✓
-        modelMG.add(mgBarrel, mgCoolJacket, mgCoolTip, mgReceiver, mgPanMag, mgPanHub, mgStock, mgBipodL, mgBipodR, mgFSightPost, mgRSightL, mgRSightR);
+        modelMG.add(mgBarrel, mgCoolJacket, mgCoolTip, mgReceiver, mgPanMag, mgStock, mgBipodL, mgBipodR, mgFSightPost, mgRSightL, mgRSightR);
 
         // --- Sniper rifle model ---
         const modelSniper  = new THREE.Group();
