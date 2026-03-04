@@ -123,13 +123,22 @@
             width: 100%;
             height: 100%;
             pointer-events: none;
-            background: radial-gradient(circle, transparent 35%, rgba(0,0,0,0.9) 55%, black 100%);
+            /* Sharp tube-wall edge (1 % transition) + faint period amber-glass tint in centre */
+            background: radial-gradient(circle,
+                rgba(210,175,100,0.08) 0%,
+                rgba(190,155,75,0.05) 32%,
+                transparent 35%,
+                rgba(0,0,0,0.97) 36%,
+                black 100%
+            );
             align-items: center;
             justify-content: center;
         }
-        .scope-line-h { width: 100%; height: 2px; background: rgba(0,0,0,0.8); position: absolute; }
-        .scope-line-v { width: 2px; height: 100%; background: rgba(0,0,0,0.8); position: absolute; }
-        .scope-dot { width: 4px; height: 4px; background: red; border-radius: 50%; position: absolute; }
+        /* Fine wire crosshairs — Aldis No.1 Mk.III style (WWI British sniper scope) */
+        .scope-line-h { width: 100%; height: 1px; background: rgba(12,8,4,0.92); position: absolute; }
+        .scope-line-v { width: 1px; height: 100%; background: rgba(12,8,4,0.92); position: absolute; }
+        /* No red dot — illuminated reticles did not exist in WWI */
+        .scope-dot { display: none; }
         #instructions {
             position: absolute;
             top: 0;
@@ -213,7 +222,6 @@
         <div id="scope-overlay">
             <div class="scope-line-h"></div>
             <div class="scope-line-v"></div>
-            <div class="scope-dot"></div>
         </div>
         <div id="crosshair">+</div>
         <div id="action-prompt">Press T to use turret</div>
