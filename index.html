@@ -382,6 +382,80 @@
             gap: 8px;
             pointer-events: none;
         }
+
+        /* ===== RESPONSIVE / MOBILE HUD FIXES ===== */
+        @media (max-width: 768px) {
+            /* Move health/heat bars to top-left (away from joystick) */
+            #healthbar-container {
+                bottom: auto;
+                top: 8px;
+                left: 8px;
+                width: clamp(80px, 24vw, 160px);
+                height: 14px;
+                border-width: 1px;
+            }
+            #heatbar-container {
+                bottom: auto;
+                top: 26px;
+                left: 8px;
+                width: clamp(80px, 24vw, 160px);
+                height: 7px;
+                border-width: 1px;
+            }
+            /* Stack game indicators top-right (away from fire/aim buttons) */
+            #weapon-indicator {
+                bottom: auto;
+                top: 8px;
+                right: 8px;
+                font-size: 13px;
+                padding: 4px 8px;
+                border-width: 1px;
+            }
+            #kill-count-indicator {
+                bottom: auto;
+                top: 42px;
+                right: 8px;
+                font-size: 12px;
+                padding: 4px 8px;
+                border-width: 1px;
+            }
+            #reserves-indicator {
+                top: 78px;
+                right: 8px;
+                font-size: 12px;
+                padding: 4px 8px;
+                border-width: 1px;
+            }
+            /* Push action prompt above the lean row */
+            #action-prompt {
+                bottom: 270px;
+                font-size: 15px;
+                padding: 8px 14px;
+            }
+            /* Raise turret button above lean row */
+            #btn-turret-mobile {
+                bottom: 260px;
+            }
+            /* Responsive instructions menu */
+            .inst-text {
+                font-size: 14px;
+                padding: 0 10px;
+                max-width: 96vw;
+            }
+            .menu-btn {
+                font-size: 14px;
+                padding: 10px 14px;
+            }
+            /* Victory screen title */
+            #victory-screen h1 {
+                font-size: clamp(32px, 10vw, 72px);
+                margin-bottom: 6px;
+            }
+            #victory-screen p {
+                font-size: 16px;
+                margin-bottom: 20px;
+            }
+        }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
@@ -429,17 +503,17 @@
                 </div>
                 <p style="color:#aaa; font-size:14px;">Survive an endless onslaught or eliminate the enemy reinforcements.</p>
             </div>
-            <div style="margin: 20px 0; display: flex; flex-direction: column; align-items: center; background: rgba(0,0,0,0.5); padding: 15px; border-radius: 8px; border: 1px solid #444; width: 340px;">
+            <div style="margin: 20px 0; display: flex; flex-direction: column; align-items: center; background: rgba(0,0,0,0.5); padding: 15px; border-radius: 8px; border: 1px solid #444; width: min(340px, 90vw);">
                 <label for="soldier-count" style="font-size: 16px; font-weight: bold; margin-bottom: 5px;">
                     Total Forces (Elimination): <span id="soldier-count-display">500</span>
                 </label>
-                <input type="range" id="soldier-count" min="10" max="1000" value="500" style="width: 250px; cursor: pointer; margin-bottom: 15px;">
+                <input type="range" id="soldier-count" min="10" max="1000" value="500" style="width: min(250px, 70vw); cursor: pointer; margin-bottom: 15px;">
                 <label for="active-count" style="font-size: 16px; font-weight: bold; margin-bottom: 5px;">
                     Max Active on Field: <span id="active-count-display">25</span>
                 </label>
-                <input type="range" id="active-count" min="10" max="100" value="25" style="width: 250px; cursor: pointer;">
+                <input type="range" id="active-count" min="10" max="100" value="25" style="width: min(250px, 70vw); cursor: pointer;">
             </div>
-            <div style="display: flex; gap: 20px;">
+            <div style="display: flex; gap: 20px; flex-wrap: wrap; justify-content: center;">
                 <button id="btn-endless" class="menu-btn">Play Endless Mode</button>
                 <button id="btn-elimination" class="menu-btn">Play Elimination Mode</button>
             </div>
