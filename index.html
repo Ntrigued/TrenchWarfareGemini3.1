@@ -226,7 +226,7 @@
             position: absolute;
             top: 0; left: 0;
             width: 100%; height: 100%;
-            pointer-events: auto;
+            pointer-events: none;
             touch-action: none;
         }
         #joystick-zone {
@@ -1939,25 +1939,26 @@
             resetJoystick();
         }, { passive: false });
 
-        // --- Touch look (right side drag) ---
-        const lookZone = document.getElementById('look-zone');
+        // --- Touch look (full screen — buttons/joystick call stopPropagation so
+        //     their touches never bubble up to document; empty-area touches do) ---
         let lookTouchId = null;
         let lookLastX   = 0;
         let lookLastY   = 0;
         const LOOK_SENSITIVITY = 0.005;
 
-        lookZone.addEventListener('touchstart', e => {
-            e.preventDefault();
+        document.addEventListener('touchstart', e => {
+            if (!mobileActive || playerAI.dead) return;
             if (lookTouchId !== null) return;
+            e.preventDefault();
             const t = e.changedTouches[0];
             lookTouchId = t.identifier;
             lookLastX   = t.clientX;
             lookLastY   = t.clientY;
         }, { passive: false });
 
-        lookZone.addEventListener('touchmove', e => {
-            e.preventDefault();
+        document.addEventListener('touchmove', e => {
             if (!mobileActive || playerAI.dead) return;
+            e.preventDefault();
             for (const t of e.changedTouches) {
                 if (t.identifier !== lookTouchId) continue;
                 const dx = t.clientX - lookLastX;
@@ -1983,15 +1984,13 @@
             }
         }, { passive: false });
 
-        lookZone.addEventListener('touchend', e => {
-            e.preventDefault();
+        document.addEventListener('touchend', e => {
             for (const t of e.changedTouches) {
                 if (t.identifier === lookTouchId) { lookTouchId = null; break; }
             }
         }, { passive: false });
 
-        lookZone.addEventListener('touchcancel', e => {
-            e.preventDefault();
+        document.addEventListener('touchcancel', e => {
             lookTouchId = null;
         }, { passive: false });
 
