@@ -362,16 +362,15 @@
         }
         #mobile-sniper-zoom {
             position: absolute;
-            top: 50%;
+            bottom: 168px;
             right: 20px;
-            transform: translateY(-50%);
             display: none;
-            flex-direction: column;
-            gap: 8px;
+            flex-direction: row;
+            gap: 10px;
             pointer-events: none;
         }
         #mobile-sniper-zoom .mob-btn {
-            width: 46px; height: 46px;
+            width: 58px; height: 46px;
             font-size: 22px;
             pointer-events: auto;
         }
@@ -552,10 +551,10 @@
             <!-- Turret mount/leave button (contextual) -->
             <div id="btn-turret-mobile" style="display:flex;">TURRET</div>
 
-            <!-- Sniper zoom controls -->
+            <!-- Sniper zoom controls (above PRONE/CROUCH row) -->
             <div id="mobile-sniper-zoom">
-                <button class="mob-btn" id="btn-zoom-in">+</button>
                 <button class="mob-btn" id="btn-zoom-out">−</button>
+                <button class="mob-btn" id="btn-zoom-in">+</button>
             </div>
 
             <!-- Bottom-right action buttons -->
