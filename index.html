@@ -224,8 +224,8 @@
         }
         #look-zone {
             position: absolute;
-            top: 0; right: 0;
-            width: 60%; height: 100%;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
             pointer-events: auto;
             touch-action: none;
         }
@@ -1342,6 +1342,7 @@
                             document.getElementById('mobile-controls').style.display = 'none';
                             document.getElementById('instructions').style.display    = 'flex';
                             keys.lmb = keys.rmb = keys.w = keys.a = keys.s = keys.d = keys.shift = false;
+                            btnAim.classList.remove('active');
                         }
                     }, 2000);
                 }
@@ -2022,21 +2023,12 @@
             fireTouchId = null; keys.lmb = false; btnFire.classList.remove('active');
         }, { passive: false });
 
-        // --- AIM button (hold) ---
+        // --- AIM button (toggle) ---
         const btnAim = document.getElementById('btn-aim');
         btnAim.addEventListener('touchstart', e => {
             e.stopPropagation(); e.preventDefault();
-            keys.rmb = true;
-            btnAim.classList.add('active');
-        }, { passive: false });
-        btnAim.addEventListener('touchend', e => {
-            e.stopPropagation(); e.preventDefault();
-            keys.rmb = false;
-            btnAim.classList.remove('active');
-        }, { passive: false });
-        btnAim.addEventListener('touchcancel', e => {
-            e.stopPropagation(); e.preventDefault();
-            keys.rmb = false; btnAim.classList.remove('active');
+            keys.rmb = !keys.rmb;
+            btnAim.classList.toggle('active', keys.rmb);
         }, { passive: false });
 
         // --- Sprint toggle ---
@@ -3598,6 +3590,7 @@
             document.getElementById('instructions').style.display    = 'flex';
             // Release any held keys/touches on mobile
             keys.lmb = keys.rmb = keys.w = keys.a = keys.s = keys.d = keys.shift = false;
+            btnAim.classList.remove('active');
         });
         document.addEventListener('pointerlockchange', () => {
             if (document.getElementById('victory-screen').style.display === 'flex') return;
