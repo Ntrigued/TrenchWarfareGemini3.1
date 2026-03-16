@@ -44,7 +44,7 @@ function startGame(mode) {
 
     // Randomize spawn position
     const spawnX = (Math.random() - 0.5) * 132;
-    let spawnZ   = Math.random() > 0.5 ? (-21 + Math.random() * 3) : (-34 + Math.random() * 6);
+    let spawnZ   = Math.random() > 0.5 ? (-21 + Math.random() * 3) : (-48 + Math.random() * 6);
     let spawnPos2D = { x: spawnX, z: spawnZ };
     resolveObstacles(spawnPos2D, 0.4);
     playerRoot.position.set(spawnPos2D.x, getTerrainHeight(spawnPos2D.x, spawnPos2D.z), spawnPos2D.z);
@@ -413,8 +413,8 @@ function animate() {
             // Move player root
             let nextPos = playerRoot.position.clone().add(velocity);
             const pr    = PLAYER_RADIUS;
-            if (nextPos.z < -36.3 + pr) nextPos.z = -36.3 + pr;
-            if (nextPos.z >  36.3 - pr) nextPos.z =  36.3 - pr;
+            if (nextPos.z < -50.3 + pr) nextPos.z = -50.3 + pr;
+            if (nextPos.z >  50.3 - pr) nextPos.z =  50.3 - pr;
             if (nextPos.x < -95 + pr)   nextPos.x = -95 + pr;
             if (nextPos.x >  95 - pr)   nextPos.x =  95 - pr;
 

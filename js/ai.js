@@ -7,7 +7,7 @@ import { state, allies, enemies } from './state.js';
 import { scene, camera } from './scene.js';
 import { playPositionalSound, playSoundFile, playNearMissSound } from './audio.js';
 import { worldMeshes, getTerrainHeight, resolveObstacles,
-         allyCoversFront, allyCoversBack, enemyCoversFront, enemyCoversBack,
+         allyCoversFront, allyCoversMiddle, allyCoversBack, enemyCoversFront, enemyCoversMiddle, enemyCoversBack,
          allyPathCovers, enemyPathCovers, midCoversAlly, midCoversEnemy } from './world.js';
 import { playerRoot, playerAI } from './player.js';
 import { raycaster } from './raycast.js';
@@ -231,14 +231,20 @@ export class AI {
             if (this.coverTier === 1) return enemyPathCovers;
             if (this.coverTier === 2) return midCoversEnemy;
             if (this.coverTier === 3) return allyCoversFront;
-            if (this.coverTier === 4) return allyCoversBack;
-            return this.trenchLevel === 'front' ? enemyCoversFront : enemyCoversBack;
+            if (this.coverTier === 4) return allyCoversMiddle;
+            if (this.coverTier === 5) return allyCoversBack;
+            if (this.trenchLevel === 'front') return enemyCoversFront;
+            if (this.trenchLevel === 'middle') return enemyCoversMiddle;
+            return enemyCoversBack;
         } else {
             if (this.coverTier === 1) return allyPathCovers;
             if (this.coverTier === 2) return midCoversAlly;
             if (this.coverTier === 3) return enemyCoversFront;
-            if (this.coverTier === 4) return enemyCoversBack;
-            return this.trenchLevel === 'front' ? allyCoversFront : allyCoversBack;
+            if (this.coverTier === 4) return enemyCoversMiddle;
+            if (this.coverTier === 5) return enemyCoversBack;
+            if (this.trenchLevel === 'front') return allyCoversFront;
+            if (this.trenchLevel === 'middle') return allyCoversMiddle;
+            return allyCoversBack;
         }
     }
 
@@ -246,7 +252,9 @@ export class AI {
         const peers = this.isEnemy ? enemies : allies;
 
         if (!this.isAdvancing) {
-            const backCovers = this.isEnemy ? enemyCoversBack : allyCoversBack;
+            const backCovers   = this.isEnemy ? enemyCoversBack : allyCoversBack;
+            const middleCovers = this.isEnemy ? enemyCoversMiddle : allyCoversMiddle;
+            const frontCovers  = this.isEnemy ? enemyCoversFront : allyCoversFront;
 
             let friendlyOnTurret = backCovers.some(c => {
                 if (!c.isTurret) return false;
@@ -276,34 +284,46 @@ export class AI {
                 }
             }
 
-            const tryTrench = (level) => {
-                const covers = level === 'back'
-                    ? (this.isEnemy ? enemyCoversBack  : allyCoversBack)
-                    : (this.isEnemy ? enemyCoversFront : allyCoversFront);
+            const frontAvail = frontCovers.filter(c => {
+                if (c.isTurret && c.turret.user && c.turret.user !== this) return false;
+                return !peers.some(p => p !== this && !p.dead && p.targetCover === c);
+            });
+            const middleAvail = middleCovers.filter(c => {
+                if (c.isTurret && c.turret.user && c.turret.user !== this) return false;
+                return !peers.some(p => p !== this && !p.dead && p.targetCover === c);
+            });
+            const backAvail = backCovers.filter(c => {
+                if (c.isTurret && c.turret.user && c.turret.user !== this) return false;
+                return !peers.some(p => p !== this && !p.dead && p.targetCover === c);
+            });
 
-                let available = covers.filter(c => {
-                    if (c.isTurret && c.turret.user && c.turret.user !== this) return false;
-                    return !peers.some(p => p !== this && !p.dead && p.targetCover === c);
-                });
-
-                if (available.length > 0) {
-                    this.trenchLevel = level;
-                    this.coverTier   = 0;
-                    if (isSpawning) {
-                        let safe = available.filter(c => !isSpotVisibleToPlayer(c));
-                        if (safe.length > 0) available = safe;
-                    }
-                    this.targetCover = available[Math.floor(Math.random() * available.length)];
-                    return true;
+            const trenchPool = [];
+            if (isSpawning) {
+                if (backAvail.length > 0) trenchPool.push({ level: 'back', covers: backAvail });
+                if (frontAvail.length > 0) trenchPool.push({ level: 'front', covers: frontAvail });
+                if (trenchPool.length === 0 && middleAvail.length > 0) {
+                    trenchPool.push({ level: 'middle', covers: middleAvail });
                 }
+            } else {
+                if (backAvail.length > 0) trenchPool.push({ level: 'back', covers: backAvail });
+                if (middleAvail.length > 0) trenchPool.push({ level: 'middle', covers: middleAvail });
+                if (frontAvail.length > 0) trenchPool.push({ level: 'front', covers: frontAvail });
+            }
 
-                if (level === 'back') return tryTrench('front');
-                this.isAdvancing = true;
+            if (trenchPool.length > 0) {
+                let choice = trenchPool[Math.floor(Math.random() * trenchPool.length)];
+                if (isSpawning) {
+                    const hidden = choice.covers.filter(c => !isSpotVisibleToPlayer(c));
+                    if (hidden.length > 0) choice = { level: choice.level, covers: hidden };
+                }
+                this.trenchLevel = choice.level;
                 this.coverTier   = 0;
-                return false;
-            };
+                this.targetCover = choice.covers[Math.floor(Math.random() * choice.covers.length)];
+                return;
+            }
 
-            if (tryTrench('back')) return;
+            this.isAdvancing = true;
+            this.coverTier   = 0;
         }
 
         let covers = this.getDesiredCovers();
@@ -346,7 +366,8 @@ export class AI {
         this.targetCover  = null;
         this.scanBaseYaw  = this.isEnemy ? Math.PI : 0;
         this.shootDelay   = 0;
-        this.trenchLevel  = Math.random() > 0.5 ? 'front' : 'back';
+        const trenchLevels = ['front', 'middle', 'back'];
+        this.trenchLevel  = trenchLevels[Math.floor(Math.random() * trenchLevels.length)];
         this.crouchT      = 1.0;
         this.aimT         = 0.0;
 
@@ -550,7 +571,8 @@ export class AI {
                 } else if (isPath(curZ)) {
                     if (isHome(destZ)) {
                         let safeZ = destZ > 0 ? 19.5 : -19.5;
-                        if (Math.abs(destZ) > 26) safeZ = destZ > 0 ? 28 : -28;
+                        if (Math.abs(destZ) > 31) safeZ = destZ > 0 ? 33 : -33;
+                        else if (Math.abs(destZ) > 26) safeZ = destZ > 0 ? 28 : -28;
                         if (Math.abs(curZ - safeZ) > 1.0) { tempX = curX; tempZ = safeZ; }
                         else                               { tempX = destX; tempZ = destZ; }
                     } else if (isMid(destZ)) {
@@ -597,7 +619,7 @@ export class AI {
                             this.pickCover();
                             this.state = 'moving';
                         }
-                    } else if (this.isAdvancing && this.coverTier < 4 && !this.findTarget()) {
+                    } else if (this.isAdvancing && this.coverTier < 5 && !this.findTarget()) {
                         this.coverTier++;
                         this.pickCover();
                         this.state = 'moving';
@@ -705,7 +727,7 @@ export class AI {
                     this.shootDelay = 0.1 + Math.random() * 0.2;
                     this.mesh.rotation.y = this.scanBaseYaw + Math.sin(performance.now() * 0.002 + this.mesh.id) * 0.5;
                     if (this.timer <= 0) {
-                        if (this.isAdvancing && this.coverTier < 4) {
+                        if (this.isAdvancing && this.coverTier < 5) {
                             this.coverTier++;
                             this.pickCover();
                             this.state = 'moving';
@@ -734,7 +756,7 @@ export class AI {
                         if (this.interruptedMove) {
                             this.interruptedMove = false;
                             this.state = 'moving';
-                        } else if (this.isAdvancing && this.coverTier < 4 && Math.random() < 0.95) {
+                        } else if (this.isAdvancing && this.coverTier < 5 && Math.random() < 0.95) {
                             this.coverTier++;
                             this.pickCover();
                             this.state = 'moving';
@@ -855,17 +877,21 @@ export class AI {
         // Z-axis bounds by tier
         let minZ, maxZ;
         if (this.isEnemy) {
-            if (this.coverTier === 4)          { minZ = -36.2; maxZ = 36.2; }
-            else if (this.coverTier === 3)     { minZ = -22.0; maxZ = 36.2; }
-            else if (this.coverTier > 0)       { minZ =  -5.0; maxZ = 36.2; }
-            else if (this.trenchLevel === 'front') { minZ = 18.2; maxZ = 21.8; }
-            else                               { minZ = 26.8;  maxZ = 36.2; }
+            if (this.coverTier === 5)               { minZ = -50.2; maxZ = 50.2; }
+            else if (this.coverTier === 4)          { minZ = -36.0; maxZ = 50.2; }
+            else if (this.coverTier === 3)          { minZ = -22.0; maxZ = 50.2; }
+            else if (this.coverTier > 0)            { minZ =  -5.0; maxZ = 50.2; }
+            else if (this.trenchLevel === 'front')  { minZ = 18.2;  maxZ = 21.8; }
+            else if (this.trenchLevel === 'middle') { minZ = 30.6;  maxZ = 33.8; }
+            else                                    { minZ = 40.8;  maxZ = 50.2; }
         } else {
-            if (this.coverTier === 4)          { minZ = -36.2; maxZ = 36.2; }
-            else if (this.coverTier === 3)     { minZ = -36.2; maxZ = 22.0; }
-            else if (this.coverTier > 0)       { minZ = -36.2; maxZ =  5.0; }
-            else if (this.trenchLevel === 'front') { minZ = -21.8; maxZ = -18.2; }
-            else                               { minZ = -36.2; maxZ = -26.8; }
+            if (this.coverTier === 5)               { minZ = -50.2; maxZ = 50.2; }
+            else if (this.coverTier === 4)          { minZ = -50.2; maxZ = 36.0; }
+            else if (this.coverTier === 3)          { minZ = -50.2; maxZ = 22.0; }
+            else if (this.coverTier > 0)            { minZ = -50.2; maxZ =  5.0; }
+            else if (this.trenchLevel === 'front')  { minZ = -21.8; maxZ = -18.2; }
+            else if (this.trenchLevel === 'middle') { minZ = -33.8; maxZ = -30.6; }
+            else                                    { minZ = -50.2; maxZ = -40.8; }
         }
         this.mesh.position.z = Math.max(minZ, Math.min(maxZ, this.mesh.position.z));
 
