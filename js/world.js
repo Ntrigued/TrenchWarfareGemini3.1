@@ -21,6 +21,14 @@ export function getTerrainHeight(x, z) {
             return 1.0;
         }
     }
+    if (absZ >= 30.0 && absZ < 34.0) return -1.2;
+    if (absZ >= 34.0 && absZ < 38.0) {
+        const inGap = (Math.abs(x + 60) < 4.2) || (Math.abs(x + 20) < 4.2) ||
+                      (Math.abs(x - 20) < 4.2) || (Math.abs(x - 60) < 4.2);
+        if (inGap) {
+            return -1.2 + (2.2 * ((absZ - 34.0) / 4.0));
+        }
+    }
     return 1.0;
 }
 
@@ -59,7 +67,7 @@ export const wallMat   = new THREE.MeshLambertMaterial({ color: 0x4a3c2b });
 export const woodMat   = new THREE.MeshLambertMaterial({ color: 0x3d2817 });
 
 // --- Base ground plane ---
-const baseFloor = new THREE.Mesh(new THREE.PlaneGeometry(200, 100), groundMat);
+const baseFloor = new THREE.Mesh(new THREE.PlaneGeometry(200, 128), groundMat);
 baseFloor.rotation.x = -Math.PI / 2;
 baseFloor.position.set(0, -1.2, 0);
 scene.add(baseFloor);
@@ -83,14 +91,20 @@ nmlRegions.forEach(reg => {
 });
 
 // --- Battlefield floor planes ---
-const bfA = new THREE.Mesh(new THREE.PlaneGeometry(200, 10.75), wallMat);
+const bfA = new THREE.Mesh(new THREE.PlaneGeometry(200, 4), wallMat);
 bfA.rotation.x = -Math.PI / 2;
-bfA.position.set(0, 1.0, -31.375);
-const bfE = new THREE.Mesh(new THREE.PlaneGeometry(200, 10.75), wallMat);
+bfA.position.set(0, 1.0, -28);
+const bfARear = new THREE.Mesh(new THREE.PlaneGeometry(200, 12.75), wallMat);
+bfARear.rotation.x = -Math.PI / 2;
+bfARear.position.set(0, 1.0, -44.375);
+const bfE = new THREE.Mesh(new THREE.PlaneGeometry(200, 4), wallMat);
 bfE.rotation.x = -Math.PI / 2;
-bfE.position.set(0, 1.0, 31.375);
-scene.add(bfA, bfE);
-worldMeshes.push(bfA, bfE);
+bfE.position.set(0, 1.0, 28);
+const bfERear = new THREE.Mesh(new THREE.PlaneGeometry(200, 12.75), wallMat);
+bfERear.rotation.x = -Math.PI / 2;
+bfERear.position.set(0, 1.0, 44.375);
+scene.add(bfA, bfARear, bfE, bfERear);
+worldMeshes.push(bfA, bfARear, bfE, bfERear);
 
 // --- Ramps and trench-lip blocks ---
 const rampGeo     = new THREE.PlaneGeometry(8, 4.565);
@@ -115,6 +129,35 @@ for (let i = 0; i < blockCenters.length; i++) {
     collisionObstacles.push({ minX: cx - w/2, maxX: cx + w/2, minZ: 22.0, maxZ: 26.0 });
 }
 
+for (let i = 0; i < blockCenters.length; i++) {
+    let cx = blockCenters[i];
+    let w  = blockWidths[i];
+
+    let bA1 = new THREE.Mesh(new THREE.BoxGeometry(w, 2.2, 4.0), groundMat);
+    bA1.position.set(cx, -0.1, -32.0);
+    scene.add(bA1);
+    worldMeshes.push(bA1);
+    collisionObstacles.push({ minX: cx - w/2, maxX: cx + w/2, minZ: -34.0, maxZ: -30.0 });
+
+    let bE1 = new THREE.Mesh(new THREE.BoxGeometry(w, 2.2, 4.0), groundMat);
+    bE1.position.set(cx, -0.1, 32.0);
+    scene.add(bE1);
+    worldMeshes.push(bE1);
+    collisionObstacles.push({ minX: cx - w/2, maxX: cx + w/2, minZ: 30.0, maxZ: 34.0 });
+
+    let bA2 = new THREE.Mesh(new THREE.BoxGeometry(w, 2.2, 4.0), groundMat);
+    bA2.position.set(cx, -0.1, -36.0);
+    scene.add(bA2);
+    worldMeshes.push(bA2);
+    collisionObstacles.push({ minX: cx - w/2, maxX: cx + w/2, minZ: -38.0, maxZ: -34.0 });
+
+    let bE2 = new THREE.Mesh(new THREE.BoxGeometry(w, 2.2, 4.0), groundMat);
+    bE2.position.set(cx, -0.1, 36.0);
+    scene.add(bE2);
+    worldMeshes.push(bE2);
+    collisionObstacles.push({ minX: cx - w/2, maxX: cx + w/2, minZ: 34.0, maxZ: 38.0 });
+}
+
 for (let i = 0; i < gapCenters.length; i++) {
     let rA = new THREE.Mesh(rampGeo, groundMat);
     rA.rotation.x = -Math.PI / 2 + 0.5028;
@@ -127,6 +170,32 @@ for (let i = 0; i < gapCenters.length; i++) {
     rE.position.set(gapCenters[i], -0.1, 24.0);
     scene.add(rE);
     worldMeshes.push(rE);
+}
+
+for (let i = 0; i < gapCenters.length; i++) {
+    let rA1 = new THREE.Mesh(rampGeo, groundMat);
+    rA1.rotation.x = -Math.PI / 2 - 0.5028;
+    rA1.position.set(gapCenters[i], -0.1, -32.0);
+    scene.add(rA1);
+    worldMeshes.push(rA1);
+
+    let rE1 = new THREE.Mesh(rampGeo, groundMat);
+    rE1.rotation.x = -Math.PI / 2 + 0.5028;
+    rE1.position.set(gapCenters[i], -0.1, 32.0);
+    scene.add(rE1);
+    worldMeshes.push(rE1);
+
+    let rA2 = new THREE.Mesh(rampGeo, groundMat);
+    rA2.rotation.x = -Math.PI / 2 + 0.5028;
+    rA2.position.set(gapCenters[i], -0.1, -36.0);
+    scene.add(rA2);
+    worldMeshes.push(rA2);
+
+    let rE2 = new THREE.Mesh(rampGeo, groundMat);
+    rE2.rotation.x = -Math.PI / 2 - 0.5028;
+    rE2.position.set(gapCenters[i], -0.1, 36.0);
+    scene.add(rE2);
+    worldMeshes.push(rE2);
 }
 
 // --- Trench wall builder ---
@@ -146,9 +215,16 @@ createWall( 71.5, -17.75, 57, 1.4, -0.5);
 createWall(-71.5,  17.75, 57, 1.4, -0.5);
 createWall(   0,   17.75, 74, 1.4, -0.5);
 createWall( 71.5,  17.75, 57, 1.4, -0.5);
+// Inner trench walls (middle)
+createWall(-71.5, -29.75, 57, 1.4, -0.5);
+createWall(   0,  -29.75, 74, 1.4, -0.5);
+createWall( 71.5, -29.75, 57, 1.4, -0.5);
+createWall(-71.5,  29.75, 57, 1.4, -0.5);
+createWall(   0,   29.75, 74, 1.4, -0.5);
+createWall( 71.5,  29.75, 57, 1.4, -0.5);
 // Outer boundary walls
-createWall(0, -36.75, 200, 2.0, 2.0);
-createWall(0,  36.75, 200, 2.0, 2.0);
+createWall(0, -50.75, 200, 2.0, 2.0);
+createWall(0,  50.75, 200, 2.0, 2.0);
 
 // --- Random jagged buttresses along trench walls ---
 for (let i = 0; i < 50; i++) {
@@ -169,18 +245,20 @@ for (let i = 0; i < 50; i++) {
 }
 
 // --- Side boundary walls ---
-const sideWallGeo = new THREE.BoxGeometry(2, 10, 80);
+const sideWallGeo = new THREE.BoxGeometry(2, 10, 108);
 const sw1 = new THREE.Mesh(sideWallGeo, wallMat); sw1.position.set(-100, 0, 0);
 const sw2 = new THREE.Mesh(sideWallGeo, wallMat); sw2.position.set( 100, 0, 0);
 scene.add(sw1, sw2);
 worldMeshes.push(sw1, sw2);
-collisionObstacles.push({ minX: -101, maxX:  -99, minZ: -40, maxZ: 40 });
-collisionObstacles.push({ minX:   99, maxX:  101, minZ: -40, maxZ: 40 });
+collisionObstacles.push({ minX: -101, maxX:  -99, minZ: -54, maxZ: 54 });
+collisionObstacles.push({ minX:   99, maxX:  101, minZ: -54, maxZ: 54 });
 
 // --- Cover position arrays ---
 export const allyCoversFront  = [];
+export const allyCoversMiddle = [];
 export const allyCoversBack   = [];
 export const enemyCoversFront = [];
+export const enemyCoversMiddle = [];
 export const enemyCoversBack  = [];
 export const allyPathCovers   = [];
 export const enemyPathCovers  = [];
@@ -222,7 +300,7 @@ for (let x = -90; x <= 90; x += 5 + Math.random() * 6) {
 // --- Random chaotic debris ---
 for (let i = 0; i < 60; i++) {
     const x = (Math.random() - 0.5) * 180;
-    const z = (Math.random() - 0.5) * 35;
+    const z = (Math.random() - 0.5) * 100;
     if (Math.abs(x + 40) < 4 || Math.abs(x - 40) < 4) continue;
     let bw = 0.8 + Math.random();
     let bh = 0.5 + Math.random();
@@ -245,7 +323,7 @@ const craterMat = new THREE.MeshBasicMaterial({ color: 0x1a1c14, depthWrite: fal
 for (let i = 0; i < 120; i++) {
     let cr = new THREE.Mesh(craterGeo, craterMat);
     let cx = (Math.random() - 0.5) * 190;
-    let cz = (Math.random() - 0.5) * 36;
+    let cz = (Math.random() - 0.5) * 100;
     let s  = 0.5 + Math.random() * 2;
     cr.scale.set(s, s, s);
     cr.rotation.x = -Math.PI / 2;
