@@ -7,8 +7,13 @@ import { state, allies, enemies } from './state.js';
 import { scene, camera } from './scene.js';
 import { playPositionalSound, playSoundFile, playNearMissSound } from './audio.js';
 import { worldMeshes, getTerrainHeight, resolveObstacles,
-         allyCoversFront, allyCoversBack, enemyCoversFront, enemyCoversBack,
-         allyPathCovers, enemyPathCovers, midCoversAlly, midCoversEnemy } from './world.js';
+         allyCoversFront, allyCoversMiddle, allyCoversBack,
+         enemyCoversFront, enemyCoversMiddle, enemyCoversBack,
+         allyPathCovers, enemyPathCovers, midCoversAlly, midCoversEnemy,
+         HOME_TRENCH_LEVELS, FRONT_TRENCH, FRONT_LIP_BAND, MIDDLE_TRENCH, MIDDLE_EXIT_BAND,
+         BACK_TRENCH, CONNECTOR_PLATEAU,
+         PLAYABLE_HALF_DEPTH, WALL_GAP_CENTERS, RAMP_GAP_CENTERS,
+         getHomeTrenchBounds, getHomeTrenchCovers } from './world.js';
 import { playerRoot, playerAI } from './player.js';
 import { raycaster } from './raycast.js';
 import { isSpotVisibleToPlayer } from './raycast.js';
@@ -226,107 +231,208 @@ export class AI {
         this.respawn();
     }
 
+    getHomeCovers(level) {
+        return getHomeTrenchCovers(this.isEnemy, level);
+    }
+
+    getEnemyHomeCovers(level) {
+        return getHomeTrenchCovers(!this.isEnemy, level);
+    }
+
+    chooseDefensiveTrenchLevel() {
+        const peers = this.isEnemy ? enemies : allies;
+        const occupancy = HOME_TRENCH_LEVELS.map(level => ({
+            level,
+            count: peers.filter(peer => {
+                if (peer === this || peer.dead || peer.isAdvancing) return false;
+                return (peer.homeAssignment || peer.trenchLevel) === level;
+            }).length,
+        }));
+
+        const minCount = Math.min(...occupancy.map(entry => entry.count));
+        const choices = occupancy.filter(entry => entry.count === minCount).map(entry => entry.level);
+        return choices[Math.floor(Math.random() * choices.length)];
+    }
+
+    getNextHomeTrenchLevel() {
+        if (this.trenchLevel === 'back') return 'middle';
+        if (this.trenchLevel === 'middle') return 'front';
+        return null;
+    }
+
+    advanceToNextCover() {
+        if (this.coverTier === 0) {
+            const nextHomeLevel = this.getNextHomeTrenchLevel();
+            if (nextHomeLevel) {
+                this.trenchLevel = nextHomeLevel;
+            } else {
+                this.coverTier = 1;
+            }
+        } else if (this.coverTier < 5) {
+            this.coverTier++;
+        } else {
+            return false;
+        }
+
+        this.pickCover();
+        this.state = 'moving';
+        return true;
+    }
+
     getDesiredCovers() {
         if (this.isEnemy) {
             if (this.coverTier === 1) return enemyPathCovers;
             if (this.coverTier === 2) return midCoversEnemy;
             if (this.coverTier === 3) return allyCoversFront;
-            if (this.coverTier === 4) return allyCoversBack;
-            return this.trenchLevel === 'front' ? enemyCoversFront : enemyCoversBack;
+            if (this.coverTier === 4) return allyCoversMiddle;
+            if (this.coverTier === 5) return allyCoversBack;
+            return this.getHomeCovers(this.trenchLevel);
         } else {
             if (this.coverTier === 1) return allyPathCovers;
             if (this.coverTier === 2) return midCoversAlly;
             if (this.coverTier === 3) return enemyCoversFront;
-            if (this.coverTier === 4) return enemyCoversBack;
-            return this.trenchLevel === 'front' ? allyCoversFront : allyCoversBack;
+            if (this.coverTier === 4) return enemyCoversMiddle;
+            if (this.coverTier === 5) return enemyCoversBack;
+            return this.getHomeCovers(this.trenchLevel);
         }
     }
 
     pickCover(isSpawning = false) {
         const peers = this.isEnemy ? enemies : allies;
+        const isFriendlyTurretUser = (turretUser) => (
+            turretUser &&
+            !turretUser.dead &&
+            (this.isEnemy ? turretUser.isEnemy : !turretUser.isEnemy)
+        );
+
+        const isCoverClaimed = (cover) => {
+            if (cover.isTurret && cover.turret.user && cover.turret.user !== this && !cover.turret.user.dead) return true;
+            return peers.some(peer => peer !== this && !peer.dead && peer.targetCover === cover);
+        };
+
+        const chooseCover = (covers, preferHidden = false) => {
+            let available = covers.filter(cover => !isCoverClaimed(cover));
+            if (available.length === 0) return null;
+
+            if (preferHidden) {
+                const hidden = available.filter(cover => !isSpotVisibleToPlayer(cover));
+                if (hidden.length > 0) available = hidden;
+            }
+
+            return available[Math.floor(Math.random() * available.length)];
+        };
+
+        const chooseLeastOccupied = (covers, preferHidden = false) => {
+            let pool = covers.filter(cover => !(cover.isTurret && cover.turret.user && cover.turret.user !== this && !cover.turret.user.dead));
+            if (pool.length === 0) return null;
+
+            if (preferHidden) {
+                const hidden = pool.filter(cover => !isSpotVisibleToPlayer(cover));
+                if (hidden.length > 0) pool = hidden;
+            }
+
+            const occupancy = pool.map(cover => ({
+                cover,
+                count: peers.filter(peer => peer !== this && !peer.dead && peer.targetCover === cover).length,
+            }));
+            const minCount = Math.min(...occupancy.map(entry => entry.count));
+            const best = occupancy.filter(entry => entry.count === minCount).map(entry => entry.cover);
+            return best[Math.floor(Math.random() * best.length)];
+        };
+
+        const setChosenCover = (cover, trenchLevelOverride = null) => {
+            if (!cover) return false;
+            this.targetCover = cover;
+            if (trenchLevelOverride) this.trenchLevel = trenchLevelOverride;
+            else if (cover.trenchLevel) this.trenchLevel = cover.trenchLevel;
+            return true;
+        };
 
         if (!this.isAdvancing) {
-            const backCovers = this.isEnemy ? enemyCoversBack : allyCoversBack;
+            if (!this.homeAssignment) this.homeAssignment = this.chooseDefensiveTrenchLevel();
 
-            let friendlyOnTurret = backCovers.some(c => {
-                if (!c.isTurret) return false;
-                if (c.turret.user && !c.turret.user.dead && (this.isEnemy ? c.turret.user.isEnemy : !c.turret.user.isEnemy)) return true;
-                if (peers.some(p => p !== this && !p.dead && p.targetCover === c)) return true;
-                return false;
-            });
+            const turretLevels = isSpawning ? ['back'] : ['back', 'middle'];
+            const homeTurrets = turretLevels.flatMap(level => this.getHomeCovers(level).filter(cover => cover.isTurret));
+            const friendlyOnTurret = homeTurrets.some(cover => (
+                isFriendlyTurretUser(cover.turret.user) ||
+                peers.some(peer => peer !== this && !peer.dead && peer.targetCover === cover)
+            ));
 
             if (!friendlyOnTurret) {
-                let emptyTurrets = backCovers.filter(c => {
-                    if (!c.isTurret) return false;
-                    if (c.turret.user && c.turret.user !== this && !c.turret.user.dead) return false;
-                    if (peers.some(p => p !== this && !p.dead && p.targetCover === c)) return false;
-                    return true;
-                });
-
-                if (emptyTurrets.length > 0) {
-                    let safeTurrets = emptyTurrets;
-                    if (isSpawning) {
-                        let hiddenTurrets = emptyTurrets.filter(c => !isSpotVisibleToPlayer(c));
-                        if (hiddenTurrets.length > 0) safeTurrets = hiddenTurrets;
-                    }
-                    this.targetCover = safeTurrets[Math.floor(Math.random() * safeTurrets.length)];
-                    this.trenchLevel = 'back';
-                    this.coverTier   = 0;
+                const turretChoice = chooseCover(homeTurrets, isSpawning);
+                if (setChosenCover(turretChoice)) {
+                    this.coverTier = 0;
                     return;
                 }
             }
 
-            const tryTrench = (level) => {
-                const covers = level === 'back'
-                    ? (this.isEnemy ? enemyCoversBack  : allyCoversBack)
-                    : (this.isEnemy ? enemyCoversFront : allyCoversFront);
+            const spawnOrder = this.homeAssignment === 'front'
+                ? ['front', 'back', 'middle']
+                : (this.homeAssignment === 'back' ? ['back', 'front', 'middle'] : ['back', 'front', 'middle']);
 
-                let available = covers.filter(c => {
-                    if (c.isTurret && c.turret.user && c.turret.user !== this) return false;
-                    return !peers.some(p => p !== this && !p.dead && p.targetCover === c);
-                });
-
-                if (available.length > 0) {
-                    this.trenchLevel = level;
-                    this.coverTier   = 0;
-                    if (isSpawning) {
-                        let safe = available.filter(c => !isSpotVisibleToPlayer(c));
-                        if (safe.length > 0) available = safe;
+            if (isSpawning) {
+                for (const level of spawnOrder) {
+                    const choice = chooseCover(this.getHomeCovers(level), true);
+                    if (setChosenCover(choice, level)) {
+                        this.coverTier = 0;
+                        return;
                     }
-                    this.targetCover = available[Math.floor(Math.random() * available.length)];
-                    return true;
                 }
 
-                if (level === 'back') return tryTrench('front');
-                this.isAdvancing = true;
-                this.coverTier   = 0;
-                return false;
-            };
+                const fallbackSpawn = chooseLeastOccupied(
+                    spawnOrder.flatMap(level => this.getHomeCovers(level)),
+                    true
+                );
+                if (setChosenCover(fallbackSpawn)) {
+                    this.coverTier = 0;
+                    return;
+                }
+            } else {
+                const preferredLevels = [this.homeAssignment, ...HOME_TRENCH_LEVELS.filter(level => level !== this.homeAssignment)];
+                for (const level of preferredLevels) {
+                    const choice = chooseCover(this.getHomeCovers(level));
+                    if (setChosenCover(choice, level)) {
+                        this.coverTier = 0;
+                        return;
+                    }
+                }
 
-            if (tryTrench('back')) return;
+                const fallbackHome = chooseLeastOccupied(
+                    preferredLevels.flatMap(level => this.getHomeCovers(level))
+                );
+                if (setChosenCover(fallbackHome)) {
+                    this.coverTier = 0;
+                    return;
+                }
+            }
+
+            this.isAdvancing   = true;
+            this.homeAssignment = null;
+            this.coverTier     = 0;
         }
 
-        let covers = this.getDesiredCovers();
-        let available = covers.filter(c => {
-            if (c.isTurret && c.turret.user && c.turret.user !== this) return false;
-            return !peers.some(p => p !== this && !p.dead && p.targetCover === c);
-        });
+        if (isSpawning && this.coverTier === 0) {
+            const preferredSpawnLevels = this.trenchLevel === 'front'
+                ? ['front', 'back', 'middle']
+                : ['back', 'front', 'middle'];
 
-        if (available.length === 0) {
-            const occupancy = covers.map(c => ({
-                cover: c,
-                count: peers.filter(p => p !== this && !p.dead && p.targetCover === c).length
-            }));
-            const minCount = Math.min(...occupancy.map(o => o.count));
-            available = occupancy.filter(o => o.count === minCount).map(o => o.cover);
+            for (const level of preferredSpawnLevels) {
+                const choice = chooseCover(this.getHomeCovers(level), true);
+                if (setChosenCover(choice, level)) return;
+            }
+
+            const fallbackSpawn = chooseLeastOccupied(
+                preferredSpawnLevels.flatMap(level => this.getHomeCovers(level)),
+                true
+            );
+            if (setChosenCover(fallbackSpawn)) return;
         }
 
-        if (isSpawning) {
-            let safeAvailable = available.filter(c => !isSpotVisibleToPlayer(c));
-            if (safeAvailable.length > 0) available = safeAvailable;
-        }
+        const covers = this.getDesiredCovers();
+        const choice = chooseCover(covers, isSpawning);
+        if (setChosenCover(choice)) return;
 
-        this.targetCover = available[Math.floor(Math.random() * available.length)];
+        setChosenCover(chooseLeastOccupied(covers, isSpawning));
     }
 
     respawn() {
@@ -347,6 +453,7 @@ export class AI {
         this.scanBaseYaw  = this.isEnemy ? Math.PI : 0;
         this.shootDelay   = 0;
         this.trenchLevel  = Math.random() > 0.5 ? 'front' : 'back';
+        this.homeAssignment = null;
         this.crouchT      = 1.0;
         this.aimT         = 0.0;
 
@@ -363,6 +470,7 @@ export class AI {
         this.isAdvancing    = (advancers / livingCount) < 0.5;
         this.coverTier      = 0;
         this.interruptedMove = false;
+        if (!this.isAdvancing) this.homeAssignment = this.chooseDefensiveTrenchLevel();
 
         this.pickCover(true);
         this.mesh.position.set(
@@ -534,25 +642,70 @@ export class AI {
                 let tempX = destX;
                 let tempZ = destZ;
 
-                const isHome  = (z) => Math.abs(z) >= 17;
+                const absCurZ = Math.abs(curZ);
+                const absDestZ = Math.abs(destZ);
+                const currentSide = curZ >= 0 ? 1 : -1;
+                const destSide = destZ >= 0 ? 1 : -1;
+                const nearestWallGapX = WALL_GAP_CENTERS.reduce((best, gapX) => (
+                    Math.abs(curX - gapX) < Math.abs(curX - best) ? gapX : best
+                ), WALL_GAP_CENTERS[0]);
+                const nearestRampGapX = RAMP_GAP_CENTERS.reduce((best, gapX) => (
+                    Math.abs(curX - gapX) < Math.abs(curX - best) ? gapX : best
+                ), RAMP_GAP_CENTERS[0]);
+                const isHome  = (z) => Math.abs(z) >= FRONT_TRENCH.wallAbsZ;
                 const isMid   = (z) => Math.abs(z) <= 5;
-                const isPath  = (z) => Math.abs(z) > 5 && Math.abs(z) < 17;
-                const getPathX = (x) => (Math.abs(x - (-40)) < Math.abs(x - 40)) ? -40 : 40;
+                const isPath  = (z) => Math.abs(z) > 5 && Math.abs(z) < FRONT_TRENCH.wallAbsZ;
+                const targetZone = this.targetCover.zone || (this.targetCover.trenchLevel ? 'home' : null);
 
-                if (isHome(curZ) && !isHome(destZ)) {
-                    let px = getPathX(curX);
-                    if (Math.abs(curX - px) > 1.0) { tempX = px; tempZ = curZ; }
-                    else                            { tempX = px; tempZ = destZ; }
+                if (targetZone === 'home' && currentSide === destSide && absCurZ >= FRONT_TRENCH.wallAbsZ - 0.5) {
+                    const side = destSide;
+                    const targetLevel = this.targetCover.trenchLevel || this.trenchLevel;
+
+                    if (targetLevel === 'front') {
+                        if (absCurZ >= BACK_TRENCH.minAbsZ - 0.6) {
+                            if (Math.abs(curX - nearestRampGapX) > 1.0) { tempX = nearestRampGapX; tempZ = curZ; }
+                            else                                         { tempX = nearestRampGapX; tempZ = side * (MIDDLE_TRENCH.maxAbsZ - 0.4); }
+                        } else if (absCurZ >= MIDDLE_TRENCH.minAbsZ - 0.6) {
+                            if (Math.abs(curX - nearestRampGapX) > 1.0) { tempX = nearestRampGapX; tempZ = curZ; }
+                            else                                         { tempX = nearestRampGapX; tempZ = side * CONNECTOR_PLATEAU.centerAbsZ; }
+                        } else if (absCurZ > FRONT_TRENCH.maxAbsZ + 0.3) {
+                            if (Math.abs(curX - nearestRampGapX) > 1.0) { tempX = nearestRampGapX; tempZ = curZ; }
+                            else                                         { tempX = nearestRampGapX; tempZ = side * FRONT_TRENCH.coverAbsZ; }
+                        }
+                    } else if (targetLevel === 'middle') {
+                        if (absCurZ <= FRONT_TRENCH.maxAbsZ + 0.3) {
+                            if (Math.abs(curX - nearestRampGapX) > 1.0) { tempX = nearestRampGapX; tempZ = curZ; }
+                            else                                         { tempX = nearestRampGapX; tempZ = side * CONNECTOR_PLATEAU.centerAbsZ; }
+                        } else if (absCurZ < MIDDLE_TRENCH.minAbsZ - 0.3) {
+                            if (Math.abs(curX - nearestRampGapX) > 1.0) { tempX = nearestRampGapX; tempZ = curZ; }
+                            else                                         { tempX = nearestRampGapX; tempZ = side * MIDDLE_TRENCH.coverAbsZ; }
+                        } else if (absCurZ >= BACK_TRENCH.minAbsZ - 0.6) {
+                            if (Math.abs(curX - nearestRampGapX) > 1.0) { tempX = nearestRampGapX; tempZ = curZ; }
+                            else                                         { tempX = nearestRampGapX; tempZ = side * (MIDDLE_TRENCH.maxAbsZ - 0.4); }
+                        }
+                    } else if (targetLevel === 'back') {
+                        if (absCurZ <= FRONT_TRENCH.maxAbsZ + 0.3) {
+                            if (Math.abs(curX - nearestRampGapX) > 1.0) { tempX = nearestRampGapX; tempZ = curZ; }
+                            else                                         { tempX = nearestRampGapX; tempZ = side * CONNECTOR_PLATEAU.centerAbsZ; }
+                        } else if (absCurZ < MIDDLE_TRENCH.minAbsZ - 0.3) {
+                            if (Math.abs(curX - nearestRampGapX) > 1.0) { tempX = nearestRampGapX; tempZ = curZ; }
+                            else                                         { tempX = nearestRampGapX; tempZ = side * MIDDLE_TRENCH.coverAbsZ; }
+                        } else if (absCurZ <= MIDDLE_TRENCH.maxAbsZ + 0.6) {
+                            if (Math.abs(curX - nearestRampGapX) > 1.0) { tempX = nearestRampGapX; tempZ = curZ; }
+                            else                                         { tempX = nearestRampGapX; tempZ = side * (MIDDLE_EXIT_BAND.endAbsZ + 0.2); }
+                        }
+                    }
+                } else if (isHome(curZ) && !isHome(destZ)) {
+                    if (Math.abs(curX - nearestWallGapX) > 1.0) { tempX = nearestWallGapX; tempZ = curZ; }
+                    else                                         { tempX = nearestWallGapX; tempZ = destZ; }
                 } else if (isMid(curZ) && !isMid(destZ)) {
-                    let px = getPathX(curX);
-                    if (Math.abs(curX - px) > 1.0) { tempX = px; tempZ = curZ; }
-                    else                            { tempX = px; tempZ = destZ; }
+                    if (Math.abs(curX - nearestWallGapX) > 1.0) { tempX = nearestWallGapX; tempZ = curZ; }
+                    else                                         { tempX = nearestWallGapX; tempZ = destZ; }
                 } else if (isPath(curZ)) {
                     if (isHome(destZ)) {
-                        let safeZ = destZ > 0 ? 19.5 : -19.5;
-                        if (Math.abs(destZ) > 26) safeZ = destZ > 0 ? 28 : -28;
+                        const safeZ = destZ > 0 ? FRONT_TRENCH.coverAbsZ + 1.0 : -(FRONT_TRENCH.coverAbsZ + 1.0);
                         if (Math.abs(curZ - safeZ) > 1.0) { tempX = curX; tempZ = safeZ; }
-                        else                               { tempX = destX; tempZ = destZ; }
+                        else                              { tempX = destX; tempZ = destZ; }
                     } else if (isMid(destZ)) {
                         if (Math.abs(curZ) > 1.0) { tempX = curX; tempZ = 0; }
                         else                      { tempX = destX; tempZ = destZ; }
@@ -597,10 +750,11 @@ export class AI {
                             this.pickCover();
                             this.state = 'moving';
                         }
-                    } else if (this.isAdvancing && this.coverTier < 4 && !this.findTarget()) {
-                        this.coverTier++;
+                    } else if (!this.isAdvancing && this.homeAssignment && this.trenchLevel !== this.homeAssignment) {
+                        this.trenchLevel = this.homeAssignment;
                         this.pickCover();
                         this.state = 'moving';
+                    } else if (this.isAdvancing && !this.findTarget() && this.advanceToNextCover()) {
                     } else {
                         this.state = 'popping';
                         this.timer = 0.3;
@@ -705,10 +859,7 @@ export class AI {
                     this.shootDelay = 0.1 + Math.random() * 0.2;
                     this.mesh.rotation.y = this.scanBaseYaw + Math.sin(performance.now() * 0.002 + this.mesh.id) * 0.5;
                     if (this.timer <= 0) {
-                        if (this.isAdvancing && this.coverTier < 4) {
-                            this.coverTier++;
-                            this.pickCover();
-                            this.state = 'moving';
+                        if (this.isAdvancing && this.advanceToNextCover()) {
                         } else {
                             this.state = 'hidden';
                             this.timer = 0.5 + Math.random();
@@ -734,10 +885,7 @@ export class AI {
                         if (this.interruptedMove) {
                             this.interruptedMove = false;
                             this.state = 'moving';
-                        } else if (this.isAdvancing && this.coverTier < 4 && Math.random() < 0.95) {
-                            this.coverTier++;
-                            this.pickCover();
-                            this.state = 'moving';
+                        } else if (this.isAdvancing && Math.random() < 0.95 && this.advanceToNextCover()) {
                         } else if (this.isAdvancing && Math.random() < 0.2) {
                             this.pickCover();
                             this.state = 'moving';
@@ -854,18 +1002,33 @@ export class AI {
 
         // Z-axis bounds by tier
         let minZ, maxZ;
-        if (this.isEnemy) {
-            if (this.coverTier === 4)          { minZ = -36.2; maxZ = 36.2; }
-            else if (this.coverTier === 3)     { minZ = -22.0; maxZ = 36.2; }
-            else if (this.coverTier > 0)       { minZ =  -5.0; maxZ = 36.2; }
-            else if (this.trenchLevel === 'front') { minZ = 18.2; maxZ = 21.8; }
-            else                               { minZ = 26.8;  maxZ = 36.2; }
+        const currentHomeSide = this.mesh.position.z >= 0 ? 1 : -1;
+        const targetHomeSide = (this.targetCover && this.targetCover.z >= 0) ? 1 : -1;
+        if (
+            this.state === 'moving' &&
+            this.targetCover &&
+            this.targetCover.zone === 'home' &&
+            currentHomeSide === targetHomeSide
+        ) {
+            if (targetHomeSide > 0) {
+                minZ = FRONT_TRENCH.wallAbsZ - 0.5;
+                maxZ = PLAYABLE_HALF_DEPTH;
+            } else {
+                minZ = -PLAYABLE_HALF_DEPTH;
+                maxZ = -(FRONT_TRENCH.wallAbsZ - 0.5);
+            }
+        } else if (this.isEnemy) {
+            if (this.coverTier >= 5)           { minZ = -PLAYABLE_HALF_DEPTH; maxZ = PLAYABLE_HALF_DEPTH; }
+            else if (this.coverTier === 4)     { minZ = -MIDDLE_TRENCH.maxAbsZ; maxZ = PLAYABLE_HALF_DEPTH; }
+            else if (this.coverTier === 3)     { minZ = -FRONT_LIP_BAND.startAbsZ; maxZ = PLAYABLE_HALF_DEPTH; }
+            else if (this.coverTier > 0)       { minZ = -5.0; maxZ = PLAYABLE_HALF_DEPTH; }
+            else                               ({ minZ, maxZ } = getHomeTrenchBounds(this.trenchLevel, true));
         } else {
-            if (this.coverTier === 4)          { minZ = -36.2; maxZ = 36.2; }
-            else if (this.coverTier === 3)     { minZ = -36.2; maxZ = 22.0; }
-            else if (this.coverTier > 0)       { minZ = -36.2; maxZ =  5.0; }
-            else if (this.trenchLevel === 'front') { minZ = -21.8; maxZ = -18.2; }
-            else                               { minZ = -36.2; maxZ = -26.8; }
+            if (this.coverTier >= 5)           { minZ = -PLAYABLE_HALF_DEPTH; maxZ = PLAYABLE_HALF_DEPTH; }
+            else if (this.coverTier === 4)     { minZ = -PLAYABLE_HALF_DEPTH; maxZ = MIDDLE_TRENCH.maxAbsZ; }
+            else if (this.coverTier === 3)     { minZ = -PLAYABLE_HALF_DEPTH; maxZ = FRONT_LIP_BAND.startAbsZ; }
+            else if (this.coverTier > 0)       { minZ = -PLAYABLE_HALF_DEPTH; maxZ = 5.0; }
+            else                               ({ minZ, maxZ } = getHomeTrenchBounds(this.trenchLevel, false));
         }
         this.mesh.position.z = Math.max(minZ, Math.min(maxZ, this.mesh.position.z));
 

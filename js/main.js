@@ -11,7 +11,8 @@ import { PLAYER_RADIUS, PLAYER_HP_MAX, EYE_HEIGHT_STAND, EYE_HEIGHT_CROUCH, EYE_
 import { state, allies, enemies, turrets } from './state.js';
 import { scene, camera, renderer } from './scene.js';
 import { initAudio, startAmbientBattle, playSoundFile, getAudioState } from './audio.js';
-import { getTerrainHeight, resolveObstacles } from './world.js';
+import { getTerrainHeight, resolveObstacles, FRONT_TRENCH, BACK_TRENCH,
+         PLAYABLE_HALF_DEPTH, PLAYABLE_HALF_WIDTH } from './world.js';
 import './turrets.js';  // side-effect: builds turrets and covers
 import { flashes, explosions, impacts, tracers, ashParticles, ashCount, horizonLights } from './effects.js';
 import { playerRoot, leanObject, pitchObject, playerAI } from './player.js';
@@ -44,7 +45,12 @@ function startGame(mode) {
 
     // Randomize spawn position
     const spawnX = (Math.random() - 0.5) * 132;
-    let spawnZ   = Math.random() > 0.5 ? (-21 + Math.random() * 3) : (-34 + Math.random() * 6);
+    let spawnZ;
+    if (Math.random() > 0.5) {
+        spawnZ = -(FRONT_TRENCH.minAbsZ + (Math.random() * (FRONT_TRENCH.maxAbsZ - FRONT_TRENCH.minAbsZ)));
+    } else {
+        spawnZ = -(BACK_TRENCH.minAbsZ + (Math.random() * (BACK_TRENCH.maxAbsZ - BACK_TRENCH.minAbsZ)));
+    }
     let spawnPos2D = { x: spawnX, z: spawnZ };
     resolveObstacles(spawnPos2D, 0.4);
     playerRoot.position.set(spawnPos2D.x, getTerrainHeight(spawnPos2D.x, spawnPos2D.z), spawnPos2D.z);
@@ -413,10 +419,10 @@ function animate() {
             // Move player root
             let nextPos = playerRoot.position.clone().add(velocity);
             const pr    = PLAYER_RADIUS;
-            if (nextPos.z < -36.3 + pr) nextPos.z = -36.3 + pr;
-            if (nextPos.z >  36.3 - pr) nextPos.z =  36.3 - pr;
-            if (nextPos.x < -95 + pr)   nextPos.x = -95 + pr;
-            if (nextPos.x >  95 - pr)   nextPos.x =  95 - pr;
+            if (nextPos.z < -PLAYABLE_HALF_DEPTH + pr) nextPos.z = -PLAYABLE_HALF_DEPTH + pr;
+            if (nextPos.z >  PLAYABLE_HALF_DEPTH - pr) nextPos.z =  PLAYABLE_HALF_DEPTH - pr;
+            if (nextPos.x < -PLAYABLE_HALF_WIDTH + pr) nextPos.x = -PLAYABLE_HALF_WIDTH + pr;
+            if (nextPos.x >  PLAYABLE_HALF_WIDTH - pr) nextPos.x =  PLAYABLE_HALF_WIDTH - pr;
 
             let pPos2D = { x: nextPos.x, z: nextPos.z };
             resolveObstacles(pPos2D, pr);
