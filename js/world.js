@@ -4,6 +4,11 @@
 
 import { scene } from './scene.js';
 
+export const ARENA_HALF_DEPTH = 44.5;
+export const FRONT_TRENCH_Z   = 18.5;
+export const MIDDLE_TRENCH_Z  = 30.5;
+export const REAR_TRENCH_Z    = 34.25;
+
 // --- Shared state ---
 export const worldMeshes        = [];
 export const collisionObstacles = [];
@@ -20,6 +25,15 @@ export function getTerrainHeight(x, z) {
         } else {
             return 1.0;
         }
+    }
+    if (absZ >= 28.0 && absZ < 30.0) {
+        return 1.0 + (-2.2 * ((absZ - 28.0) / 2.0));
+    }
+    if (absZ >= 30.0 && absZ < 34.0) {
+        return -1.2;
+    }
+    if (absZ >= 34.0 && absZ < 36.0) {
+        return -1.2 + (2.2 * ((absZ - 34.0) / 2.0));
     }
     return 1.0;
 }
@@ -59,7 +73,7 @@ export const wallMat   = new THREE.MeshLambertMaterial({ color: 0x4a3c2b });
 export const woodMat   = new THREE.MeshLambertMaterial({ color: 0x3d2817 });
 
 // --- Base ground plane ---
-const baseFloor = new THREE.Mesh(new THREE.PlaneGeometry(200, 100), groundMat);
+const baseFloor = new THREE.Mesh(new THREE.PlaneGeometry(200, 120), groundMat);
 baseFloor.rotation.x = -Math.PI / 2;
 baseFloor.position.set(0, -1.2, 0);
 scene.add(baseFloor);
@@ -89,8 +103,14 @@ bfA.position.set(0, 1.0, -31.375);
 const bfE = new THREE.Mesh(new THREE.PlaneGeometry(200, 10.75), wallMat);
 bfE.rotation.x = -Math.PI / 2;
 bfE.position.set(0, 1.0, 31.375);
-scene.add(bfA, bfE);
-worldMeshes.push(bfA, bfE);
+const rearA = new THREE.Mesh(new THREE.PlaneGeometry(200, 8.75), wallMat);
+rearA.rotation.x = -Math.PI / 2;
+rearA.position.set(0, 1.0, -40.125);
+const rearE = new THREE.Mesh(new THREE.PlaneGeometry(200, 8.75), wallMat);
+rearE.rotation.x = -Math.PI / 2;
+rearE.position.set(0, 1.0, 40.125);
+scene.add(bfA, bfE, rearA, rearE);
+worldMeshes.push(bfA, bfE, rearA, rearE);
 
 // --- Ramps and trench-lip blocks ---
 const rampGeo     = new THREE.PlaneGeometry(8, 4.565);
@@ -129,6 +149,38 @@ for (let i = 0; i < gapCenters.length; i++) {
     worldMeshes.push(rE);
 }
 
+const midRampGeo = new THREE.PlaneGeometry(8, 2.283);
+for (let i = 0; i < blockCenters.length; i++) {
+    let cx = blockCenters[i];
+    let w  = blockWidths[i];
+
+    let bA = new THREE.Mesh(new THREE.BoxGeometry(w, 2.2, 2.0), groundMat);
+    bA.position.set(cx, -0.1, -35.0);
+    scene.add(bA);
+    worldMeshes.push(bA);
+    collisionObstacles.push({ minX: cx - w/2, maxX: cx + w/2, minZ: -36.0, maxZ: -34.0 });
+
+    let bE = new THREE.Mesh(new THREE.BoxGeometry(w, 2.2, 2.0), groundMat);
+    bE.position.set(cx, -0.1, 35.0);
+    scene.add(bE);
+    worldMeshes.push(bE);
+    collisionObstacles.push({ minX: cx - w/2, maxX: cx + w/2, minZ: 34.0, maxZ: 36.0 });
+}
+
+for (let i = 0; i < gapCenters.length; i++) {
+    let rA = new THREE.Mesh(midRampGeo, groundMat);
+    rA.rotation.x = -Math.PI / 2 - 0.768;
+    rA.position.set(gapCenters[i], -0.1, -35.0);
+    scene.add(rA);
+    worldMeshes.push(rA);
+
+    let rE = new THREE.Mesh(midRampGeo, groundMat);
+    rE.rotation.x = -Math.PI / 2 + 0.768;
+    rE.position.set(gapCenters[i], -0.1, 35.0);
+    scene.add(rE);
+    worldMeshes.push(rE);
+}
+
 // --- Trench wall builder ---
 export function createWall(x, z, w, h, yCenter) {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.5), wallMat);
@@ -146,14 +198,23 @@ createWall( 71.5, -17.75, 57, 1.4, -0.5);
 createWall(-71.5,  17.75, 57, 1.4, -0.5);
 createWall(   0,   17.75, 74, 1.4, -0.5);
 createWall( 71.5,  17.75, 57, 1.4, -0.5);
+// Inner trench walls (middle)
+createWall(-71.5, -29.75, 57, 1.4, -0.5);
+createWall(   0,  -29.75, 74, 1.4, -0.5);
+createWall( 71.5, -29.75, 57, 1.4, -0.5);
+createWall(-71.5,  29.75, 57, 1.4, -0.5);
+createWall(   0,   29.75, 74, 1.4, -0.5);
+createWall( 71.5,  29.75, 57, 1.4, -0.5);
 // Outer boundary walls
-createWall(0, -36.75, 200, 2.0, 2.0);
-createWall(0,  36.75, 200, 2.0, 2.0);
+createWall(0, -44.75, 200, 2.0, 2.0);
+createWall(0,  44.75, 200, 2.0, 2.0);
 
 // --- Random jagged buttresses along trench walls ---
 for (let i = 0; i < 50; i++) {
     let bx = (Math.random() - 0.5) * 190;
-    let bz = Math.random() > 0.5 ? (-17.5 + (Math.random() * 1.5)) : (17.5 - (Math.random() * 1.5));
+    const wallBands = [-29.0, -17.5, 17.5, 29.0];
+    let bzBase = wallBands[Math.floor(Math.random() * wallBands.length)];
+    let bz = bzBase + (Math.random() - 0.5) * 1.5;
     if (Math.abs(bx + 60) < 5 || Math.abs(bx + 20) < 5 || Math.abs(bx - 20) < 5 || Math.abs(bx - 60) < 5) continue;
     let bw = 1.0 + Math.random() * 4.0;
     let bh = 1.0 + Math.random() * 1.5;
@@ -169,18 +230,20 @@ for (let i = 0; i < 50; i++) {
 }
 
 // --- Side boundary walls ---
-const sideWallGeo = new THREE.BoxGeometry(2, 10, 80);
+const sideWallGeo = new THREE.BoxGeometry(2, 10, 96);
 const sw1 = new THREE.Mesh(sideWallGeo, wallMat); sw1.position.set(-100, 0, 0);
 const sw2 = new THREE.Mesh(sideWallGeo, wallMat); sw2.position.set( 100, 0, 0);
 scene.add(sw1, sw2);
 worldMeshes.push(sw1, sw2);
-collisionObstacles.push({ minX: -101, maxX:  -99, minZ: -40, maxZ: 40 });
-collisionObstacles.push({ minX:   99, maxX:  101, minZ: -40, maxZ: 40 });
+collisionObstacles.push({ minX: -101, maxX:  -99, minZ: -48, maxZ: 48 });
+collisionObstacles.push({ minX:   99, maxX:  101, minZ: -48, maxZ: 48 });
 
 // --- Cover position arrays ---
 export const allyCoversFront  = [];
+export const allyCoversMiddle = [];
 export const allyCoversBack   = [];
 export const enemyCoversFront = [];
+export const enemyCoversMiddle = [];
 export const enemyCoversBack  = [];
 export const allyPathCovers   = [];
 export const enemyPathCovers  = [];

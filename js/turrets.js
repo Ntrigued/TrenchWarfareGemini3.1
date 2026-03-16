@@ -5,11 +5,12 @@
 import { scene } from './scene.js';
 import { turrets } from './state.js';
 import { wallMat, worldMeshes, collisionObstacles, allyCoversBack, enemyCoversBack,
-         allyCoversFront, enemyCoversFront, createWall, addCover,
-         blockCenters, blockWidths } from './world.js';
+         allyCoversFront, allyCoversMiddle, enemyCoversFront, enemyCoversMiddle,
+         createWall, addCover, blockCenters, blockWidths,
+         MIDDLE_TRENCH_Z, REAR_TRENCH_Z } from './world.js';
 
 export class Turret {
-    constructor(x, y, z, isEnemy) {
+    constructor(x, y, z, isEnemy, coverArr = null) {
         this.isEnemy = isEnemy;
         this.mesh    = new THREE.Group();
         this.mesh.position.set(x, y, z);
@@ -162,12 +163,12 @@ export class Turret {
 
         const zOffset = this.isEnemy ? 1.0 : -1.0;
         this.coverPos = { x: this.mesh.position.x, z: this.mesh.position.z + zOffset, isTurret: true, turret: this };
-        if (this.isEnemy) enemyCoversBack.push(this.coverPos);
-        else              allyCoversBack.push(this.coverPos);
+        const targetCoverArray = coverArr || (this.isEnemy ? enemyCoversBack : allyCoversBack);
+        targetCoverArray.push(this.coverPos);
     }
 }
 
-export function buildElevatedWallAndCovers(zPos, isEnemy) {
+export function buildElevatedWallAndCovers(zPos, isEnemy, coverArr, turretConfig = null) {
     const leftBlock  = 1;
     const rightBlock = 3;
     const turretBlocks = [leftBlock, rightBlock];
@@ -189,11 +190,13 @@ export function buildElevatedWallAndCovers(zPos, isEnemy) {
                 createWall(x, zPos, 3.5, 1.8, 1.9);
             } else {
                 const targetZ = isEnemy ? zPos + 1.2 : zPos - 1.2;
-                if (turretCounts[i] === count) {
-                    new Turret(x, 2.0, zPos, isEnemy);
+                const shouldPlaceTurret = turretConfig
+                    ? (i === turretConfig.blockIndex && count === turretConfig.countIndex)
+                    : (turretCounts[i] === count);
+                if (shouldPlaceTurret) {
+                    new Turret(x, 2.0, zPos, isEnemy, coverArr);
                 } else {
-                    if (isEnemy) enemyCoversBack.push({ x: x, z: targetZ, y: 1.0 });
-                    else         allyCoversBack.push({ x: x, z: targetZ, y: 1.0 });
+                    coverArr.push({ x: x, z: targetZ, y: 1.0 });
                 }
             }
             count++;
@@ -202,8 +205,12 @@ export function buildElevatedWallAndCovers(zPos, isEnemy) {
 }
 
 // --- Build the two elevated walls ---
-buildElevatedWallAndCovers(-26.25, false);
-buildElevatedWallAndCovers( 26.25, true);
+buildElevatedWallAndCovers(-REAR_TRENCH_Z, false, allyCoversBack);
+buildElevatedWallAndCovers( REAR_TRENCH_Z, true, enemyCoversBack);
+
+// --- Build middle trench walls and one staggered turret per side ---
+buildElevatedWallAndCovers(-MIDDLE_TRENCH_Z, false, allyCoversMiddle, { blockIndex: 2, countIndex: 3 });
+buildElevatedWallAndCovers( MIDDLE_TRENCH_Z, true, enemyCoversMiddle, { blockIndex: 2, countIndex: 5 });
 
 // --- Scattered front-line cover ---
 for (let x = -96; x <= 96; x += 4 + Math.random() * 3) {

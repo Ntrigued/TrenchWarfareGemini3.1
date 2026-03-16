@@ -11,7 +11,7 @@ import { PLAYER_RADIUS, PLAYER_HP_MAX, EYE_HEIGHT_STAND, EYE_HEIGHT_CROUCH, EYE_
 import { state, allies, enemies, turrets } from './state.js';
 import { scene, camera, renderer } from './scene.js';
 import { initAudio, startAmbientBattle, playSoundFile, getAudioState } from './audio.js';
-import { getTerrainHeight, resolveObstacles } from './world.js';
+import { getTerrainHeight, resolveObstacles, ARENA_HALF_DEPTH } from './world.js';
 import './turrets.js';  // side-effect: builds turrets and covers
 import { flashes, explosions, impacts, tracers, ashParticles, ashCount, horizonLights } from './effects.js';
 import { playerRoot, leanObject, pitchObject, playerAI } from './player.js';
@@ -413,8 +413,8 @@ function animate() {
             // Move player root
             let nextPos = playerRoot.position.clone().add(velocity);
             const pr    = PLAYER_RADIUS;
-            if (nextPos.z < -36.3 + pr) nextPos.z = -36.3 + pr;
-            if (nextPos.z >  36.3 - pr) nextPos.z =  36.3 - pr;
+            if (nextPos.z < -ARENA_HALF_DEPTH + 0.2 + pr) nextPos.z = -ARENA_HALF_DEPTH + 0.2 + pr;
+            if (nextPos.z >  ARENA_HALF_DEPTH - 0.2 - pr) nextPos.z =  ARENA_HALF_DEPTH - 0.2 - pr;
             if (nextPos.x < -95 + pr)   nextPos.x = -95 + pr;
             if (nextPos.x >  95 - pr)   nextPos.x =  95 - pr;
 
