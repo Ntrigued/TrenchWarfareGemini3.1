@@ -52,3 +52,6 @@ export const TURRET_EXPLOSION_DAMAGE     = 10;
 export const AI_MOVE_SPEED          = 4.5;
 export const AI_DAMAGE_FROM_AI      = 0.05;  // flat damage when AI shoots AI
 export const AI_PEER_SEPARATION     = 0.8;   // metres, crowd-separation radius
+export const AI_MEMORY_DURATION     = 2.75;  // seconds to remember a lost contact
+export const AI_SEARCH_DURATION     = 1.4;   // seconds to actively scan last seen position
+export const AI_BLIND_FIRE_CHANCE   = 0.35;  // chance to fire at a remembered position

@@ -2,7 +2,8 @@
 // AI SYSTEM
 // ================================================================
 
-import { AI_MOVE_SPEED, AI_DAMAGE_FROM_AI, AI_PEER_SEPARATION } from './config.js';
+import { AI_MOVE_SPEED, AI_DAMAGE_FROM_AI, AI_PEER_SEPARATION,
+         AI_MEMORY_DURATION, AI_SEARCH_DURATION, AI_BLIND_FIRE_CHANCE } from './config.js';
 import { state, allies, enemies } from './state.js';
 import { scene, camera } from './scene.js';
 import { playPositionalSound, playSoundFile, playNearMissSound } from './audio.js';
@@ -346,6 +347,12 @@ export class AI {
         this.targetCover  = null;
         this.scanBaseYaw  = this.isEnemy ? Math.PI : 0;
         this.shootDelay   = 0;
+        this.searchTimer  = 0;
+        this.suspicionTimer = 0;
+        this.hasLastSeenPos = false;
+        this.lastSeenPos    = new THREE.Vector3();
+        this.lastSeenTarget = null;
+        this.isBlindFiring  = false;
         this.trenchLevel  = Math.random() > 0.5 ? 'front' : 'back';
         this.crouchT      = 1.0;
         this.aimT         = 0.0;
@@ -380,9 +387,8 @@ export class AI {
             const isPlayerShootingAlly = attacker.isPlayer && !this.isEnemy;
             if (!isFriendlyFire && !isPlayerShootingAlly) {
                 this.target = attacker;
-                let targetPos = attacker.isPlayer
-                    ? camera.getWorldPosition(new THREE.Vector3())
-                    : attacker.mesh.position.clone();
+                this.rememberTarget(attacker, 1.0);
+                const targetPos = this.getTargetAimPosition(attacker);
                 this.scanBaseYaw = Math.atan2(targetPos.x - this.mesh.position.x, targetPos.z - this.mesh.position.z);
             }
         }
@@ -480,6 +486,18 @@ export class AI {
         }
 
         this.timer -= dt;
+        this.suspicionTimer = Math.max(0, this.suspicionTimer - dt);
+        this.searchTimer    = Math.max(0, this.searchTimer - dt);
+
+        if (this.lastSeenTarget && this.lastSeenTarget.dead) {
+            this.lastSeenTarget = null;
+        }
+        if (this.target && this.target.dead) {
+            this.target = null;
+        }
+        if (this.suspicionTimer <= 0 && this.hasLastSeenPos) {
+            this.clearMemory();
+        }
 
         // Threat detection
         let closestThreat  = null;
@@ -505,11 +523,11 @@ export class AI {
         }
 
         if (closestThreat && this.target !== closestThreat) {
-            if (this.calculateExposure(closestThreat) > 0) {
+            const exposure = this.calculateExposure(closestThreat);
+            if (exposure > 0) {
                 this.target = closestThreat;
-                const tPos = closestThreat.isPlayer
-                    ? camera.getWorldPosition(new THREE.Vector3())
-                    : closestThreat.mesh.position.clone();
+                this.rememberTarget(closestThreat, exposure);
+                const tPos = this.getTargetAimPosition(closestThreat);
                 this.scanBaseYaw = Math.atan2(tPos.x - this.mesh.position.x, tPos.z - this.mesh.position.z);
                 if (this.state === 'moving') this.interruptedMove = true;
                 if (this.state !== 'using_turret') {
@@ -517,6 +535,15 @@ export class AI {
                     this.shootDelay = 0.2 + Math.random() * 0.2;
                 }
             }
+        }
+
+        const targetVisible = this.target && !this.target.dead
+            ? this.calculateExposure(this.target)
+            : 0;
+        if (targetVisible > 0) {
+            this.rememberTarget(this.target, targetVisible);
+        } else if (this.target && !this.target.dead && this.lastSeenTarget !== this.target) {
+            this.rememberTarget(this.target, 0.35);
         }
 
         let targetCrouch = 0.0;
@@ -597,6 +624,9 @@ export class AI {
                             this.pickCover();
                             this.state = 'moving';
                         }
+                    } else if (this.hasSuspicion()) {
+                        this.state = 'searching';
+                        this.timer = AI_SEARCH_DURATION * (0.6 + Math.random() * 0.5);
                     } else if (this.isAdvancing && this.coverTier < 4 && !this.findTarget()) {
                         this.coverTier++;
                         this.pickCover();
@@ -628,6 +658,7 @@ export class AI {
                     t.pitchGroup.rotation.x += (0 - t.pitchGroup.rotation.x) * 2 * dt;
                     this.mesh.rotation.y = t.swivel.rotation.y + Math.PI;
                 } else if (this.target && !this.target.dead && this.checkLOS(this.target)) {
+                    this.rememberTarget(this.target, this.calculateExposure(this.target));
                     let targetPos = new THREE.Vector3();
                     if (this.target.isPlayer) camera.getWorldPosition(targetPos);
                     else targetPos.copy(this.target.mesh.position);
@@ -663,10 +694,73 @@ export class AI {
                         this.shootDelay -= dt;
                     }
                 } else {
-                    this.target     = this.findTarget();
-                    this.shootDelay = 0.5 + Math.random() * 0.5;
-                    t.swivel.rotation.y    += (this.scanBaseYaw - t.swivel.rotation.y) * 2 * dt;
-                    t.pitchGroup.rotation.x += (0 - t.pitchGroup.rotation.x) * 2 * dt;
+                    this.target = this.findTarget();
+                    if (this.target) {
+                        this.rememberTarget(this.target, 1.0);
+                        const targetPos = this.getTargetAimPosition(this.target);
+                        const tx = targetPos.x - t.mesh.position.x;
+                        const tz = targetPos.z - t.mesh.position.z;
+                        let targetTurretYaw = Math.atan2(tx, tz) + Math.PI;
+
+                        let aiYawDiff = targetTurretYaw - t.baseYaw;
+                        while (aiYawDiff < -Math.PI) aiYawDiff += Math.PI * 2;
+                        while (aiYawDiff >  Math.PI) aiYawDiff -= Math.PI * 2;
+                        if (aiYawDiff >  Math.PI / 2) targetTurretYaw = t.baseYaw + Math.PI / 2;
+                        if (aiYawDiff < -Math.PI / 2) targetTurretYaw = t.baseYaw - Math.PI / 2;
+
+                        let tDiff = targetTurretYaw - t.swivel.rotation.y;
+                        while (tDiff < -Math.PI) tDiff += Math.PI * 2;
+                        while (tDiff >  Math.PI) tDiff -= Math.PI * 2;
+                        t.swivel.rotation.y += tDiff * 4 * dt;
+
+                        const tDist2d = Math.sqrt(tx * tx + tz * tz);
+                        const ty      = targetPos.y - (t.mesh.position.y + 0.3);
+                        const targetTurretPitch = Math.atan2(ty, tDist2d);
+                        t.pitchGroup.rotation.x += (targetTurretPitch - t.pitchGroup.rotation.x) * 4 * dt;
+
+                        if (this.shootDelay <= 0) {
+                            if (Math.abs(tDiff) < 0.2) {
+                                shootTurret(t, this);
+                                this.shootDelay = 1.8 + Math.random() * 0.4;
+                            }
+                        } else {
+                            this.shootDelay -= dt;
+                        }
+                    } else if (this.hasSuspicion()) {
+                        const memoryPos = this.getSearchAimPosition();
+                        const tx = memoryPos.x - t.mesh.position.x;
+                        const tz = memoryPos.z - t.mesh.position.z;
+                        let targetTurretYaw = Math.atan2(tx, tz) + Math.PI;
+
+                        let aiYawDiff = targetTurretYaw - t.baseYaw;
+                        while (aiYawDiff < -Math.PI) aiYawDiff += Math.PI * 2;
+                        while (aiYawDiff >  Math.PI) aiYawDiff -= Math.PI * 2;
+                        if (aiYawDiff >  Math.PI / 2) targetTurretYaw = t.baseYaw + Math.PI / 2;
+                        if (aiYawDiff < -Math.PI / 2) targetTurretYaw = t.baseYaw - Math.PI / 2;
+
+                        let tDiff = targetTurretYaw - t.swivel.rotation.y;
+                        while (tDiff < -Math.PI) tDiff += Math.PI * 2;
+                        while (tDiff >  Math.PI) tDiff -= Math.PI * 2;
+                        t.swivel.rotation.y += tDiff * 3 * dt;
+
+                        const tDist2d = Math.sqrt(tx * tx + tz * tz);
+                        const ty      = memoryPos.y - (t.mesh.position.y + 0.3);
+                        const targetTurretPitch = Math.atan2(ty, tDist2d);
+                        t.pitchGroup.rotation.x += (targetTurretPitch - t.pitchGroup.rotation.x) * 3 * dt;
+
+                        if (this.shootDelay <= 0 && Math.abs(tDiff) < 0.12 && Math.random() < AI_BLIND_FIRE_CHANCE * 0.4) {
+                            shootTurret(t, this);
+                            this.shootDelay = 1.8 + Math.random() * 0.4;
+                        } else if (this.shootDelay > 0) {
+                            this.shootDelay -= dt;
+                        }
+                    } else {
+                        if (this.shootDelay <= 0) this.shootDelay = 0.5 + Math.random() * 0.5;
+                        else this.shootDelay -= dt;
+                        t.swivel.rotation.y    += (this.scanBaseYaw - t.swivel.rotation.y) * 2 * dt;
+                        t.pitchGroup.rotation.x += (0 - t.pitchGroup.rotation.x) * 2 * dt;
+                    }
+
                     this.mesh.rotation.y = t.swivel.rotation.y + Math.PI;
                 }
                 break;
@@ -681,7 +775,9 @@ export class AI {
                     this.timer = 0.5 + Math.random() * 1.0;
                     if (!this.target || this.target.dead || !this.checkLOS(this.target)) {
                         this.target = this.findTarget();
+                        if (this.target) this.rememberTarget(this.target, 1.0);
                     } else {
+                        this.rememberTarget(this.target, this.calculateExposure(this.target));
                         this.shootDelay = 0.1 + Math.random() * 0.2;
                     }
                 }
@@ -691,28 +787,80 @@ export class AI {
                 targetCrouch = 0.0;
                 targetAim    = 1.0;
                 if (this.target && !this.target.dead && this.checkLOS(this.target)) {
+                    this.rememberTarget(this.target, this.calculateExposure(this.target));
                     this.aimAtTarget(dt);
                     if (this.shootDelay <= 0) {
                         this.state       = 'shooting';
                         this.shotsFired  = 0;
                         this.shotsToFire = 3 + Math.floor(Math.random() * 4);
+                        this.isBlindFiring = false;
                         this.timer       = 0.1;
                     } else {
                         this.shootDelay -= dt;
                     }
                 } else {
                     this.target     = this.findTarget();
-                    this.shootDelay = 0.1 + Math.random() * 0.2;
-                    this.mesh.rotation.y = this.scanBaseYaw + Math.sin(performance.now() * 0.002 + this.mesh.id) * 0.5;
-                    if (this.timer <= 0) {
-                        if (this.isAdvancing && this.coverTier < 4) {
-                            this.coverTier++;
-                            this.pickCover();
-                            this.state = 'moving';
-                        } else {
-                            this.state = 'hidden';
-                            this.timer = 0.5 + Math.random();
+                    if (this.target) {
+                        this.rememberTarget(this.target, 1.0);
+                        this.shootDelay = 0.1 + Math.random() * 0.2;
+                    } else if (this.hasSuspicion()) {
+                        this.aimAtPosition(this.getSearchAimPosition(), dt, 6.0);
+                        if (this.timer <= 0) {
+                            this.state = 'searching';
+                            this.timer = AI_SEARCH_DURATION * (0.7 + Math.random() * 0.4);
                         }
+                    } else {
+                        this.shootDelay = 0.1 + Math.random() * 0.2;
+                        this.mesh.rotation.y = this.scanBaseYaw + Math.sin(performance.now() * 0.002 + this.mesh.id) * 0.5;
+                        if (this.timer <= 0) {
+                            if (this.isAdvancing && this.coverTier < 4) {
+                                this.coverTier++;
+                                this.pickCover();
+                                this.state = 'moving';
+                            } else {
+                                this.state = 'hidden';
+                                this.timer = 0.5 + Math.random();
+                            }
+                        }
+                    }
+                }
+                break;
+
+            case 'searching':
+                targetCrouch = 0.0;
+                targetAim    = 1.0;
+                this.target = this.findTarget();
+                if (this.target) {
+                    this.rememberTarget(this.target, 1.0);
+                    this.state = 'aiming';
+                    this.timer = 0.4 + Math.random() * 0.5;
+                    this.shootDelay = 0.1 + Math.random() * 0.2;
+                    break;
+                }
+
+                if (this.hasSuspicion()) {
+                    this.aimAtPosition(this.getSearchAimPosition(), dt, 5.0);
+                    if (this.timer <= 0) {
+                        if (Math.random() < AI_BLIND_FIRE_CHANCE) {
+                            this.state = 'shooting';
+                            this.isBlindFiring = true;
+                            this.shotsFired = 0;
+                            this.shotsToFire = 1 + Math.floor(Math.random() * 2);
+                            this.timer = 0.08 + Math.random() * 0.08;
+                        } else {
+                            this.timer = 0.25 + Math.random() * 0.35;
+                        }
+                    }
+                } else {
+                    this.isBlindFiring = false;
+                    this.target = null;
+                    if (this.isAdvancing && this.coverTier < 4 && Math.random() < 0.6) {
+                        this.coverTier++;
+                        this.pickCover();
+                        this.state = 'moving';
+                    } else {
+                        this.state = 'hidden';
+                        this.timer = 0.4 + Math.random() * 0.4;
                     }
                 }
                 break;
@@ -720,17 +868,35 @@ export class AI {
             case 'shooting':
                 targetCrouch = 0.0;
                 targetAim    = 1.0;
-                if (!this.target || this.target.dead || !this.checkLOS(this.target)) {
-                    this.state = 'hidden';
-                    this.timer = 0.5 + Math.random();
-                    break;
+                if (!this.isBlindFiring && (!this.target || this.target.dead || !this.checkLOS(this.target))) {
+                    if (!this.hasSuspicion()) {
+                        this.state = 'hidden';
+                        this.timer = 0.5 + Math.random();
+                        break;
+                    }
+                    this.isBlindFiring = true;
                 }
-                this.aimAtTarget(dt);
+
+                if (this.isBlindFiring) {
+                    if (!this.hasSuspicion()) {
+                        this.isBlindFiring = false;
+                        this.state = 'hidden';
+                        this.timer = 0.5 + Math.random();
+                        break;
+                    }
+                    this.aimAtPosition(this.getSearchAimPosition(), dt, 6.0);
+                } else {
+                    this.rememberTarget(this.target, this.calculateExposure(this.target));
+                    this.aimAtTarget(dt);
+                }
+
                 if (this.timer <= 0) {
-                    this.shoot();
+                    if (this.isBlindFiring) this.shoot(this.getBlindFireAimPosition(), 2.5);
+                    else this.shoot();
                     this.shotsFired++;
                     this.timer = 0.15 + Math.random() * 0.15;
                     if (this.shotsFired >= this.shotsToFire) {
+                        this.isBlindFiring = false;
                         if (this.interruptedMove) {
                             this.interruptedMove = false;
                             this.state = 'moving';
@@ -748,8 +914,13 @@ export class AI {
                                 team.forEach(s => { if (!s.dead) { living++; if (s.isAdvancing) adv++; } });
                                 if (adv / living < 0.5) this.isAdvancing = true;
                             }
-                            this.state = 'hidden';
-                            this.timer = 0.5 + Math.random() * 1.0;
+                            if (this.hasSuspicion()) {
+                                this.state = 'searching';
+                                this.timer = 0.35 + Math.random() * 0.4;
+                            } else {
+                                this.state = 'hidden';
+                                this.timer = 0.5 + Math.random() * 1.0;
+                            }
                         }
                     }
                 }
@@ -940,40 +1111,89 @@ export class AI {
         return bestTarget;
     }
 
-    aimAtTarget(dt) {
-        if (!this.target) return;
-        let targetPos = new THREE.Vector3();
-        if (this.target.isPlayer) camera.getWorldPosition(targetPos);
-        else targetPos.copy(this.target.mesh.position);
+    getTargetAimPosition(target) {
+        const targetPos = new THREE.Vector3();
+        if (target.isPlayer) {
+            camera.getWorldPosition(targetPos);
+            targetPos.y -= 0.2;
+        } else {
+            const targetHeightOffset = 1.55 - (target.crouchT * 0.45);
+            targetPos.copy(target.mesh.position).add(new THREE.Vector3(0, targetHeightOffset, 0));
+        }
+        return targetPos;
+    }
+
+    rememberTarget(target, exposure = 1.0) {
+        if (!target || target.dead) return;
+        this.lastSeenPos.copy(this.getTargetAimPosition(target));
+        this.hasLastSeenPos = true;
+        this.lastSeenTarget = target;
+        this.suspicionTimer = Math.max(this.suspicionTimer, AI_MEMORY_DURATION * (0.65 + (exposure * 0.5)));
+        this.searchTimer    = Math.max(this.searchTimer, AI_SEARCH_DURATION * (0.6 + Math.random() * 0.5));
+        this.scanBaseYaw = Math.atan2(this.lastSeenPos.x - this.mesh.position.x, this.lastSeenPos.z - this.mesh.position.z);
+    }
+
+    clearMemory() {
+        this.hasLastSeenPos = false;
+        this.suspicionTimer = 0;
+        this.searchTimer    = 0;
+        this.lastSeenTarget = null;
+        if (this.target && (!this.target.dead) && this.checkLOS(this.target)) return;
+        this.target = null;
+    }
+
+    hasSuspicion() {
+        return this.hasLastSeenPos && this.suspicionTimer > 0;
+    }
+
+    getSearchAimPosition() {
+        if (!this.hasSuspicion()) return null;
+        const scanPos = this.lastSeenPos.clone();
+        const sweep = Math.sin(performance.now() * 0.004 + this.mesh.id * 0.37);
+        scanPos.x += sweep * 0.8;
+        scanPos.z += Math.cos(performance.now() * 0.003 + this.mesh.id * 0.19) * 0.35;
+        scanPos.y += Math.sin(performance.now() * 0.003 + this.mesh.id * 0.11) * 0.1;
+        return scanPos;
+    }
+
+    getBlindFireAimPosition() {
+        const blindPos = this.getSearchAimPosition();
+        if (!blindPos) return null;
+        blindPos.x += (Math.random() - 0.5) * 1.4;
+        blindPos.y += (Math.random() - 0.5) * 0.3;
+        blindPos.z += (Math.random() - 0.5) * 1.0;
+        return blindPos;
+    }
+
+    aimAtPosition(targetPos, dt, turnSpeed = 8.0) {
+        if (!targetPos) return;
         const targetYaw = Math.atan2(targetPos.x - this.mesh.position.x, targetPos.z - this.mesh.position.z);
         let diff = targetYaw - this.mesh.rotation.y;
         while (diff < -Math.PI) diff += Math.PI * 2;
         while (diff >  Math.PI) diff -= Math.PI * 2;
-        this.mesh.rotation.y += diff * 8 * dt;
+        this.mesh.rotation.y += diff * turnSpeed * dt;
     }
 
-    shoot() {
-        if (!this.target || this.target.dead) return;
+    aimAtTarget(dt) {
+        if (!this.target) return;
+        this.aimAtPosition(this.getTargetAimPosition(this.target), dt);
+    }
+
+    shoot(aimPos = null, spreadMultiplier = 1.0) {
+        if (!aimPos && (!this.target || this.target.dead)) return;
         const heightOffset = 1.55 - (this.crouchT * 0.45);
         const eyeStart     = this.mesh.position.clone().add(new THREE.Vector3(0, heightOffset, 0));
 
         this.weaponGroup.updateMatrixWorld(true);
         const visualStart = new THREE.Vector3(0, 0, 0.9).applyMatrix4(this.weaponGroup.matrixWorld);
 
-        let targetPos = new THREE.Vector3();
-        if (this.target.isPlayer) {
-            camera.getWorldPosition(targetPos);
-            targetPos.y -= 0.2;
-        } else {
-            const targetHeightOffset = 1.55 - (this.target.crouchT * 0.45);
-            targetPos.copy(this.target.mesh.position).add(new THREE.Vector3(0, targetHeightOffset, 0));
-        }
+        const targetPos = aimPos ? aimPos.clone() : this.getTargetAimPosition(this.target);
 
         const dir  = targetPos.clone().sub(eyeStart).normalize();
         const dist = eyeStart.distanceTo(targetPos);
 
-        let spread = 0.05 + (dist * 0.002);
-        if (!this.target.isPlayer) spread *= 8.0;
+        let spread = (0.05 + (dist * 0.002)) * spreadMultiplier;
+        if (this.target && !this.target.isPlayer && !aimPos) spread *= 8.0;
         dir.x += (Math.random() - 0.5) * spread;
         dir.y += (Math.random() - 0.5) * spread;
         dir.z += (Math.random() - 0.5) * spread;
