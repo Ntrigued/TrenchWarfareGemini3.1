@@ -19,7 +19,7 @@ import { weaponsData, weaponContainer, modelSniper, fpFlashMaterial, fpFlashLigh
 import './input.js';  // side-effect: registers event handlers
 import { shootPlayer } from './playerShooting.js';
 import { shootTurret } from './turretShooting.js';
-import { AI, spawnSoldiers } from './ai.js';
+import { AI, spawnSoldiers, updateTeamCommanders } from './ai.js';
 
 // ================================================================
 // GAME MANAGEMENT
@@ -557,6 +557,7 @@ function animate() {
     });
 
     // AI update
+    updateTeamCommanders(dt);
     allies.forEach(a => a.update(dt));
     enemies.forEach(e => e.update(dt));
 

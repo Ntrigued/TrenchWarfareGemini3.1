@@ -1,0 +1,7 @@
+{
+  "name": "trench-warfare-gemini31",
+  "private": true,
+  "scripts": {
+    "build:single": "node --input-type=module - < scripts/build-single-file.mjs"
+  }
+}

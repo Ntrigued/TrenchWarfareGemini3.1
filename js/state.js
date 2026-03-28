@@ -48,6 +48,30 @@ export const state = {
     allyReserves: 0,
     enemyReserves: 0,
     mountedTurret: null,
+    aiCommanders: {
+        ally: {
+            mode: 'hold',
+            phaseId: 0,
+            phaseTimer: 0,
+            flankSide: 1,
+            flankAssignments: 0,
+            roleQuotas: { hold: 0, suppress: 0, flank: 0, push: 0 },
+            roleCounts: { hold: 0, suppress: 0, flank: 0, push: 0 },
+            rolePriority: ['hold', 'suppress', 'flank', 'push'],
+            defaultRole: 'hold',
+        },
+        enemy: {
+            mode: 'hold',
+            phaseId: 0,
+            phaseTimer: 0,
+            flankSide: -1,
+            flankAssignments: 0,
+            roleQuotas: { hold: 0, suppress: 0, flank: 0, push: 0 },
+            roleCounts: { hold: 0, suppress: 0, flank: 0, push: 0 },
+            rolePriority: ['hold', 'suppress', 'flank', 'push'],
+            defaultRole: 'hold',
+        }
+    },
 
     // --- Game loop ---
     lastTime: 0,

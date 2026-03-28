@@ -24,7 +24,12 @@ export function shootTurret(turret, shooter) {
     const dir       = new THREE.Vector3(0, 0, -1).applyQuaternion(turret.pitchGroup.getWorldQuaternion(new THREE.Quaternion()));
 
     let spread = 0.02;
-    if (shooter && !shooter.isPlayer) spread = 0.15;
+    if (shooter && !shooter.isPlayer) {
+        const efficiency = shooter.getCombatEfficiency ? shooter.getCombatEfficiency() : 0.8;
+        // Keep AI artillery threatening, but not so accurate that near-direct hits
+        // constantly one-shot the player.
+        spread = 0.21 - (efficiency * 0.04);
+    }
     dir.x += (Math.random() - 0.5) * spread;
     dir.y += (Math.random() - 0.5) * spread;
     dir.z += (Math.random() - 0.5) * spread;
@@ -72,8 +77,22 @@ export function shootTurret(turret, shooter) {
                     : (1.0 - (t.crouchT * 0.45));
                 const pos = t.isPlayer ? playerRoot.position.clone() : t.mesh.position.clone();
                 pos.y += posOffset;
-                if (pos.distanceTo(hit.point) < TURRET_EXPLOSION_RADIUS) {
-                    t.takeDamage(TURRET_EXPLOSION_DAMAGE, shooter);
+                const distToBlast = pos.distanceTo(hit.point);
+                if (distToBlast < TURRET_EXPLOSION_RADIUS) {
+                    let damageScale = 1.0 - ((distToBlast / TURRET_EXPLOSION_RADIUS) * 0.85);
+                    damageScale = Math.max(0.2, damageScale);
+                    let damage = TURRET_EXPLOSION_DAMAGE * damageScale;
+
+                    if (t.isPlayer && shooter && !shooter.isPlayer) {
+                        damage *= 0.6;
+                        damage = Math.min(damage, 6.5);
+                    }
+
+                    t.takeDamage(damage, shooter, {
+                        weaponType: 'turret',
+                        explosive: true,
+                        distance: distToBlast,
+                    });
                 }
             }
         });
@@ -101,7 +120,10 @@ export function shootTurret(turret, shooter) {
             if (distAlongRay < hitDistance + 1.0) {
                 const distSq = closestPt.distanceToSquared(pos);
                 if (!t.isPlayer) {
-                    if (distSq < 16.0) t.alert(shooter);
+                    if (distSq < 16.0) {
+                        const proximity = 1.0 - Math.min(Math.sqrt(distSq) / 4.0, 1.0);
+                        t.alert(shooter, 0.28 + (proximity * 0.25));
+                    }
                 } else {
                     if (distSq < 2.0) playNearMissSound();
                 }

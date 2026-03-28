@@ -3,7 +3,10 @@
 // ================================================================
 
 import { AI_MOVE_SPEED, AI_DAMAGE_FROM_AI, AI_PEER_SEPARATION,
-         AI_MEMORY_DURATION, AI_SEARCH_DURATION, AI_BLIND_FIRE_CHANCE } from './config.js';
+         AI_MEMORY_DURATION, AI_SEARCH_DURATION, AI_BLIND_FIRE_CHANCE,
+         AI_COMMAND_PUSH_DURATION, AI_COMMAND_HOLD_DURATION, AI_COMMAND_FLANK_DURATION,
+         AI_SUPPRESSION_DECAY, AI_SUPPRESSION_FROM_HIT, AI_SUPPRESSION_FROM_NEAR,
+         AI_MORALE_RECOVERY, AI_MORALE_HIT_PENALTY, AI_MORALE_CASUALTY_PENALTY } from './config.js';
 import { state, allies, enemies } from './state.js';
 import { scene, camera } from './scene.js';
 import { playPositionalSound, playSoundFile, playNearMissSound } from './audio.js';
@@ -28,6 +31,145 @@ const allyPutteeMat  = new THREE.MeshLambertMaterial({ color: 0x8a7e65 });
 const enemyPutteeMat = new THREE.MeshLambertMaterial({ color: 0x4e5040 });
 const bootMatAlly    = new THREE.MeshLambertMaterial({ color: 0x2a1e10 });
 const bootMatEnemy   = new THREE.MeshLambertMaterial({ color: 0x1a1a18 });
+
+const ROLE_KEYS = ['hold', 'suppress', 'flank', 'push'];
+
+function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+}
+
+function getCommander(isEnemy) {
+    return isEnemy ? state.aiCommanders.enemy : state.aiCommanders.ally;
+}
+
+function getTeamMembers(unit) {
+    return unit.isEnemy ? enemies : allies;
+}
+
+function getEnemyMembers(unit) {
+    return unit.isEnemy ? allies : enemies;
+}
+
+function isHostile(attacker, defender) {
+    if (!attacker || attacker.dead) return false;
+    if (attacker.isPlayer) return defender.isEnemy;
+    return attacker.isEnemy !== defender.isEnemy;
+}
+
+function spreadCasualtyShock(victim, attacker) {
+    const team = getTeamMembers(victim);
+    for (let i = 0; i < team.length; i++) {
+        const ally = team[i];
+        if (ally === victim || ally.dead) continue;
+        const dist = ally.mesh.position.distanceTo(victim.mesh.position);
+        if (dist > 18) continue;
+        ally.onNearbyCasualty(dist, attacker, victim);
+    }
+}
+
+function clampRoleQuotas(quotas, livingCount) {
+    let total = ROLE_KEYS.reduce((sum, role) => sum + quotas[role], 0);
+    if (livingCount <= 0) {
+        ROLE_KEYS.forEach(role => { quotas[role] = 0; });
+        return;
+    }
+
+    while (total > livingCount) {
+        if (quotas.hold > 0) quotas.hold--;
+        else if (quotas.push > 1) quotas.push--;
+        else if (quotas.suppress > 1) quotas.suppress--;
+        else if (quotas.flank > 0) quotas.flank--;
+        total = ROLE_KEYS.reduce((sum, role) => sum + quotas[role], 0);
+    }
+
+    while (total < livingCount) {
+        quotas.hold++;
+        total++;
+    }
+}
+
+function chooseCommanderMode(commander, livingCount, advancingCount, opposingCount) {
+    const pressure = opposingCount > 0 ? (livingCount / opposingCount) : 1.0;
+    const advancingRatio = livingCount > 0 ? (advancingCount / livingCount) : 0;
+
+    if (livingCount <= 3 || pressure < 0.75) return 'hold';
+    if (commander.mode === 'hold') {
+        if (pressure > 1.1 || advancingRatio < 0.2) return 'push';
+        return Math.random() < 0.35 ? 'flank' : 'hold';
+    }
+    if (commander.mode === 'push') {
+        if (pressure < 0.95) return 'hold';
+        return Math.random() < 0.4 ? 'flank' : 'push';
+    }
+    if (pressure > 1.0) return 'push';
+    return 'hold';
+}
+
+function setCommanderPhase(commander, livingCount, mode) {
+    commander.mode = mode;
+    commander.phaseId++;
+    commander.flankSide = Math.random() < 0.5 ? -1 : 1;
+    commander.flankAssignments = 0;
+
+    if (mode === 'push') {
+        commander.phaseTimer = AI_COMMAND_PUSH_DURATION * (0.85 + Math.random() * 0.3);
+        commander.rolePriority = ['push', 'flank', 'suppress', 'hold'];
+        commander.defaultRole = 'push';
+    } else if (mode === 'flank') {
+        commander.phaseTimer = AI_COMMAND_FLANK_DURATION * (0.85 + Math.random() * 0.3);
+        commander.rolePriority = ['flank', 'suppress', 'push', 'hold'];
+        commander.defaultRole = 'flank';
+    } else {
+        commander.phaseTimer = AI_COMMAND_HOLD_DURATION * (0.85 + Math.random() * 0.3);
+        commander.rolePriority = ['suppress', 'hold', 'push', 'flank'];
+        commander.defaultRole = 'hold';
+    }
+
+    const quotas = {
+        hold: Math.max(0, Math.round(livingCount * (mode === 'hold' ? 0.35 : 0.15))),
+        suppress: Math.max(livingCount > 0 ? 1 : 0, Math.round(livingCount * (mode === 'hold' ? 0.35 : 0.25))),
+        flank: Math.max(mode === 'flank' && livingCount > 4 ? 1 : 0, Math.round(livingCount * (mode === 'flank' ? 0.3 : 0.15))),
+        push: Math.max(mode === 'push' && livingCount > 0 ? 1 : 0, Math.round(livingCount * (mode === 'push' ? 0.4 : 0.2))),
+    };
+    clampRoleQuotas(quotas, livingCount);
+    commander.roleQuotas = quotas;
+    commander.roleCounts = { hold: 0, suppress: 0, flank: 0, push: 0 };
+}
+
+function initCommander(commander, mode = 'hold') {
+    commander.mode = mode;
+    commander.phaseId = 0;
+    commander.phaseTimer = 0;
+    commander.flankSide = Math.random() < 0.5 ? -1 : 1;
+    commander.flankAssignments = 0;
+    commander.roleQuotas = { hold: 0, suppress: 0, flank: 0, push: 0 };
+    commander.roleCounts = { hold: 0, suppress: 0, flank: 0, push: 0 };
+    commander.rolePriority = ['hold', 'suppress', 'flank', 'push'];
+    commander.defaultRole = 'hold';
+}
+
+function updateCommanderState(commander, team, opposingTeam, dt) {
+    const living = team.filter(soldier => !soldier.dead);
+    const livingCount = living.length;
+    const advancingCount = living.filter(soldier => soldier.isAdvancing).length;
+    const opposingCount = opposingTeam.filter(soldier => !soldier.dead).length;
+
+    commander.phaseTimer -= dt;
+    if (commander.phaseTimer <= 0) {
+        const nextMode = chooseCommanderMode(commander, livingCount, advancingCount, opposingCount);
+        setCommanderPhase(commander, livingCount, nextMode);
+    }
+}
+
+export function resetTeamCommanders() {
+    initCommander(state.aiCommanders.ally, 'hold');
+    initCommander(state.aiCommanders.enemy, 'hold');
+}
+
+export function updateTeamCommanders(dt) {
+    updateCommanderState(state.aiCommanders.ally, allies, enemies, dt);
+    updateCommanderState(state.aiCommanders.enemy, enemies, [...allies, playerAI], dt);
+}
 
 export class AI {
     constructor(isEnemy) {
@@ -223,6 +365,11 @@ export class AI {
         this.crouchT   = 1.0;
         this.aimT      = 0.0;
         this.walkTime  = Math.random() * 10;
+        this.role      = 'hold';
+        this.commandPhaseId = -1;
+        this.flankSide = 1;
+        this.suppression = 0;
+        this.morale      = 1;
 
         this.respawn();
     }
@@ -245,6 +392,14 @@ export class AI {
 
     pickCover(isSpawning = false) {
         const peers = this.isEnemy ? enemies : allies;
+        const chooseBestCover = (covers) => {
+            const scored = covers.map(c => ({
+                cover: c,
+                score: this.scoreCover(c) + (Math.random() * 0.35)
+            }));
+            scored.sort((a, b) => b.score - a.score);
+            return scored[0].cover;
+        };
 
         if (!this.isAdvancing) {
             const backCovers = this.isEnemy ? enemyCoversBack : allyCoversBack;
@@ -270,7 +425,7 @@ export class AI {
                         let hiddenTurrets = emptyTurrets.filter(c => !isSpotVisibleToPlayer(c));
                         if (hiddenTurrets.length > 0) safeTurrets = hiddenTurrets;
                     }
-                    this.targetCover = safeTurrets[Math.floor(Math.random() * safeTurrets.length)];
+                    this.targetCover = chooseBestCover(safeTurrets);
                     this.trenchLevel = 'back';
                     this.coverTier   = 0;
                     return;
@@ -294,7 +449,7 @@ export class AI {
                         let safe = available.filter(c => !isSpotVisibleToPlayer(c));
                         if (safe.length > 0) available = safe;
                     }
-                    this.targetCover = available[Math.floor(Math.random() * available.length)];
+                    this.targetCover = chooseBestCover(available);
                     return true;
                 }
 
@@ -304,7 +459,9 @@ export class AI {
                 return false;
             };
 
-            if (tryTrench('back')) return;
+            const preferredLevel = (this.role === 'push' || this.role === 'flank') ? 'front' : 'back';
+            if (tryTrench(preferredLevel)) return;
+            if (preferredLevel !== 'back' && tryTrench('back')) return;
         }
 
         let covers = this.getDesiredCovers();
@@ -327,7 +484,7 @@ export class AI {
             if (safeAvailable.length > 0) available = safeAvailable;
         }
 
-        this.targetCover = available[Math.floor(Math.random() * available.length)];
+        this.targetCover = chooseBestCover(available);
     }
 
     respawn() {
@@ -370,6 +527,9 @@ export class AI {
         this.isAdvancing    = (advancers / livingCount) < 0.5;
         this.coverTier      = 0;
         this.interruptedMove = false;
+        this.suppression    = 0;
+        this.morale         = 0.95 + (Math.random() * 0.1);
+        this.assignRoleFromCommander(true);
 
         this.pickCover(true);
         this.mesh.position.set(
@@ -379,19 +539,21 @@ export class AI {
         );
     }
 
-    alert(attacker) {
+    alert(attacker, severity = AI_SUPPRESSION_FROM_NEAR) {
         if (this.dead || !attacker || attacker.dead) return;
+        const isFriendlyFire      = !attacker.isPlayer && (attacker.isEnemy === this.isEnemy);
+        const isPlayerShootingAlly = attacker.isPlayer && !this.isEnemy;
+        const isHostileThreat = !isFriendlyFire && !isPlayerShootingAlly;
 
         if (!this.target || Math.random() < 0.8) {
-            const isFriendlyFire      = !attacker.isPlayer && (attacker.isEnemy === this.isEnemy);
-            const isPlayerShootingAlly = attacker.isPlayer && !this.isEnemy;
-            if (!isFriendlyFire && !isPlayerShootingAlly) {
+            if (isHostileThreat) {
                 this.target = attacker;
                 this.rememberTarget(attacker, 1.0);
                 const targetPos = this.getTargetAimPosition(attacker);
                 this.scanBaseYaw = Math.atan2(targetPos.x - this.mesh.position.x, targetPos.z - this.mesh.position.z);
             }
         }
+        if (isHostileThreat && severity > 0) this.applySuppression(severity, attacker);
 
         if (this.state === 'moving') {
             this.state           = 'aiming';
@@ -407,11 +569,17 @@ export class AI {
         }
     }
 
-    takeDamage(amount, attacker) {
+    takeDamage(amount, attacker, hitInfo = null) {
         if (this.dead || this.hp <= 0) return;
 
         if (attacker && !attacker.isPlayer) {
-            amount = AI_DAMAGE_FROM_AI;
+            amount = this.resolveAIDamage(attacker, amount, hitInfo);
+        }
+
+        const impactSuppression = AI_SUPPRESSION_FROM_HIT + ((hitInfo && hitInfo.weaponType === 'turret') ? 0.35 : 0);
+        if (isHostile(attacker, this)) {
+            this.applySuppression(impactSuppression, attacker);
+            this.adjustMorale(-AI_MORALE_HIT_PENALTY);
         }
 
         this.hp -= amount;
@@ -424,6 +592,7 @@ export class AI {
             this.deathAnimT  = 0.0;
             this.corpseDelay = 2.0;
             this.timer       = 3 + Math.random() * 2;
+            spreadCasualtyShock(this, attacker);
             if (attacker === playerAI && this.isEnemy) {
                 state.playerKills++;
                 document.getElementById('kill-count-indicator').innerText = `Kills: ${state.playerKills}`;
@@ -432,13 +601,15 @@ export class AI {
             const isFriendlyFire      = !attacker.isPlayer && (attacker.isEnemy === this.isEnemy);
             const isPlayerShootingAlly = attacker.isPlayer && !this.isEnemy;
             if (!isFriendlyFire && !isPlayerShootingAlly) {
-                this.alert(attacker);
+                this.alert(attacker, 0);
             }
             if (this.state === 'aiming' || this.state === 'popping') this.timer += 0.2;
         }
     }
 
     update(dt) {
+        this.assignRoleFromCommander();
+
         if (this.dead) {
             if (this.deathAnimT < 1.0) {
                 this.deathAnimT += dt * 3.0;
@@ -488,6 +659,11 @@ export class AI {
         this.timer -= dt;
         this.suspicionTimer = Math.max(0, this.suspicionTimer - dt);
         this.searchTimer    = Math.max(0, this.searchTimer - dt);
+        this.suppression    = Math.max(0, this.suppression - (AI_SUPPRESSION_DECAY * (this.state === 'hidden' ? 1.35 : 1.0) * dt));
+        const moraleTarget = this.role === 'push' ? 1.02 : (this.role === 'hold' ? 0.94 : 0.98);
+        const moraleRate   = AI_MORALE_RECOVERY * (this.state === 'hidden' ? 1.35 : 1.0) * (this.suppression > 0.75 ? 0.45 : 1.0);
+        this.morale += (moraleTarget - this.morale) * moraleRate * dt;
+        this.morale = clamp(this.morale, 0.2, 1.15);
 
         if (this.lastSeenTarget && this.lastSeenTarget.dead) {
             this.lastSeenTarget = null;
@@ -497,6 +673,14 @@ export class AI {
         }
         if (this.suspicionTimer <= 0 && this.hasLastSeenPos) {
             this.clearMemory();
+        }
+
+        if (this.suppression > 0.95 && this.state !== 'hidden' && this.state !== 'using_turret' && this.state !== 'moving') {
+            this.state = 'hidden';
+            this.timer = 0.45 + Math.random() * 0.35;
+        } else if (this.suppression > 1.15 && this.state === 'moving') {
+            if (this.coverTier > 0 && Math.random() < 0.45) this.coverTier--;
+            this.pickCover();
         }
 
         // Threat detection
@@ -553,7 +737,7 @@ export class AI {
 
             case 'moving': {
                 targetCrouch = 0.5;
-                const moveSpeed = AI_MOVE_SPEED;
+                const moveSpeed = AI_MOVE_SPEED * (1.0 - (this.suppression * 0.18));
                 let destX = this.targetCover.x;
                 let destZ = this.targetCover.z;
                 let curX  = this.mesh.position.x;
@@ -627,7 +811,7 @@ export class AI {
                     } else if (this.hasSuspicion()) {
                         this.state = 'searching';
                         this.timer = AI_SEARCH_DURATION * (0.6 + Math.random() * 0.5);
-                    } else if (this.isAdvancing && this.coverTier < 4 && !this.findTarget()) {
+                    } else if (this.shouldAdvanceFromCover() && this.coverTier < this.getAdvanceCap() && !this.findTarget()) {
                         this.coverTier++;
                         this.pickCover();
                         this.state = 'moving';
@@ -813,7 +997,7 @@ export class AI {
                         this.shootDelay = 0.1 + Math.random() * 0.2;
                         this.mesh.rotation.y = this.scanBaseYaw + Math.sin(performance.now() * 0.002 + this.mesh.id) * 0.5;
                         if (this.timer <= 0) {
-                            if (this.isAdvancing && this.coverTier < 4) {
+                            if (this.shouldAdvanceFromCover() && this.coverTier < this.getAdvanceCap()) {
                                 this.coverTier++;
                                 this.pickCover();
                                 this.state = 'moving';
@@ -854,7 +1038,7 @@ export class AI {
                 } else {
                     this.isBlindFiring = false;
                     this.target = null;
-                    if (this.isAdvancing && this.coverTier < 4 && Math.random() < 0.6) {
+                    if (this.shouldAdvanceAfterSearch() && this.coverTier < this.getAdvanceCap()) {
                         this.coverTier++;
                         this.pickCover();
                         this.state = 'moving';
@@ -900,11 +1084,11 @@ export class AI {
                         if (this.interruptedMove) {
                             this.interruptedMove = false;
                             this.state = 'moving';
-                        } else if (this.isAdvancing && this.coverTier < 4 && Math.random() < 0.95) {
+                        } else if (this.coverTier < this.getAdvanceCap() && Math.random() < this.getBurstAdvanceChance()) {
                             this.coverTier++;
                             this.pickCover();
                             this.state = 'moving';
-                        } else if (this.isAdvancing && Math.random() < 0.2) {
+                        } else if (Math.random() < this.getRepositionChance()) {
                             this.pickCover();
                             this.state = 'moving';
                         } else {
@@ -1111,6 +1295,194 @@ export class AI {
         return bestTarget;
     }
 
+    assignRoleFromCommander(force = false) {
+        if (this.dead && !force) return;
+        const commander = getCommander(this.isEnemy);
+        if (!force && this.commandPhaseId === commander.phaseId) return;
+
+        let nextRole = commander.defaultRole;
+        for (const role of commander.rolePriority) {
+            if (commander.roleCounts[role] < commander.roleQuotas[role]) {
+                nextRole = role;
+                break;
+            }
+        }
+
+        commander.roleCounts[nextRole]++;
+        this.role = nextRole;
+        this.commandPhaseId = commander.phaseId;
+
+        if (this.role === 'flank') {
+            this.flankSide = (commander.flankAssignments % 2 === 0) ? commander.flankSide : -commander.flankSide;
+            commander.flankAssignments++;
+        } else {
+            this.flankSide = commander.flankSide;
+        }
+
+        this.isAdvancing = this.role === 'push' || this.role === 'flank' ||
+            (commander.mode === 'push' && this.role === 'suppress');
+
+        if (!this.isAdvancing) this.coverTier = 0;
+    }
+
+    getAdvanceCap() {
+        const nerve = this.getNerve();
+        if (this.role === 'hold') return nerve < 0.45 ? 0 : 1;
+        if (this.role === 'suppress') return nerve < 0.4 ? 1 : 2;
+        return 4;
+    }
+
+    shouldAdvanceFromCover() {
+        const nerve = this.getNerve();
+        if (!this.isAdvancing || nerve < 0.22) return false;
+        if (this.role === 'push') return Math.random() < clamp(0.45 + (nerve * 0.6), 0.2, 0.95);
+        if (this.role === 'flank') return Math.random() < clamp(0.35 + (nerve * 0.55), 0.15, 0.9);
+        if (this.role === 'suppress') return Math.random() < clamp(0.08 + (nerve * 0.35), 0.05, 0.45);
+        return Math.random() < clamp(0.03 + (nerve * 0.18), 0.02, 0.2);
+    }
+
+    shouldAdvanceAfterSearch() {
+        const nerve = this.getNerve();
+        if (!this.isAdvancing || nerve < 0.24) return false;
+        if (this.role === 'push') return Math.random() < clamp(0.35 + (nerve * 0.45), 0.15, 0.8);
+        if (this.role === 'flank') return Math.random() < clamp(0.45 + (nerve * 0.45), 0.2, 0.95);
+        if (this.role === 'suppress') return Math.random() < clamp(0.05 + (nerve * 0.3), 0.03, 0.35);
+        return Math.random() < clamp(0.03 + (nerve * 0.2), 0.02, 0.2);
+    }
+
+    getBurstAdvanceChance() {
+        const nerve = this.getNerve();
+        if (!this.isAdvancing) return 0.04;
+        if (this.role === 'push') return clamp(0.2 + (nerve * 0.7), 0.08, 0.95);
+        if (this.role === 'flank') return clamp(0.18 + (nerve * 0.65), 0.08, 0.9);
+        if (this.role === 'suppress') return clamp(0.05 + (nerve * 0.35), 0.04, 0.45);
+        return clamp(0.02 + (nerve * 0.2), 0.02, 0.2);
+    }
+
+    getRepositionChance() {
+        const stress = this.getStress();
+        if (this.role === 'flank') return clamp(0.25 + (stress * 0.25), 0.18, 0.5);
+        if (this.role === 'push') return clamp(0.12 + (stress * 0.25), 0.08, 0.35);
+        if (this.role === 'suppress') return clamp(0.12 + (stress * 0.2), 0.08, 0.28);
+        return clamp(0.06 + (stress * 0.18), 0.04, 0.18);
+    }
+
+    scoreCover(cover) {
+        const progress = this.isEnemy ? -cover.z : cover.z;
+        const homeDepth = this.isEnemy ? cover.z : -cover.z;
+        const flankBias = this.flankSide === 0 ? 0 : (Math.sign(cover.x || 0) === this.flankSide ? 1.5 : -0.4);
+        const sideLaneBias = Math.abs(cover.x || 0) / 35;
+        const stress = this.getStress();
+        let score = 0;
+
+        if (cover.isTurret) {
+            if (this.role === 'suppress') score += 5;
+            else if (this.role === 'hold') score += 2;
+            else score -= 2;
+        }
+
+        if (this.role === 'push') {
+            score += progress / 10;
+            score -= homeDepth / 24;
+        } else if (this.role === 'flank') {
+            score += sideLaneBias * 2.5;
+            score += flankBias;
+            score += progress / 14;
+            if (cover.isTurret) score -= 4;
+        } else if (this.role === 'suppress') {
+            score += (progress / 18);
+            score += (cover.isTurret ? 1.5 : 0);
+            score -= Math.abs(this.mesh.position.x - cover.x) / 40;
+        } else {
+            score += homeDepth / 10;
+            score -= progress / 16;
+            score -= Math.abs(this.mesh.position.x - cover.x) / 45;
+        }
+
+        if (this.coverTier === 0 && this.role === 'hold' && this.trenchLevel === 'back' && Math.abs(cover.z) > 25) score += 1.5;
+        if (this.coverTier > 0 && this.role === 'flank') score += sideLaneBias;
+        score += homeDepth * stress * 0.08;
+        score -= progress * stress * 0.05;
+        return score;
+    }
+
+    getStress() {
+        return clamp((this.suppression * 0.7) + ((1 - this.morale) * 0.8), 0, 1.25);
+    }
+
+    getNerve() {
+        return clamp((this.morale * 1.05) - (this.suppression * 0.7), 0, 1.2);
+    }
+
+    getCombatEfficiency() {
+        let efficiency = this.morale * (1.1 - (this.suppression * 0.55));
+        if (this.role === 'suppress') efficiency *= 0.92;
+        if (this.role === 'push') efficiency *= 1.04;
+        if (this.state === 'aiming' || this.state === 'shooting' || this.state === 'using_turret') efficiency *= 1.04;
+        return clamp(efficiency, 0.25, 1.25);
+    }
+
+    getExposureForIncomingFire() {
+        let exposure = this.state === 'moving' ? 1.0 : (this.state === 'using_turret' ? 0.9 : 0.62);
+        exposure *= (1.0 - (this.crouchT * 0.3));
+        if (this.role === 'hold') exposure *= 0.9;
+        if (this.role === 'push') exposure *= 1.05;
+        return clamp(exposure, 0.2, 1.2);
+    }
+
+    adjustMorale(delta) {
+        this.morale = clamp(this.morale + delta, 0.2, 1.15);
+    }
+
+    applySuppression(amount, attacker = null) {
+        this.suppression = clamp(this.suppression + amount, 0, 1.4);
+        if (attacker && isHostile(attacker, this) && Math.random() < 0.65) {
+            this.rememberTarget(attacker, 0.45);
+        }
+    }
+
+    onNearbyCasualty(distance, attacker) {
+        const shock = (1 - clamp(distance / 18, 0, 1));
+        this.applySuppression(0.22 + (shock * 0.35), attacker);
+        this.adjustMorale(-(AI_MORALE_CASUALTY_PENALTY * (0.45 + shock)));
+        if (this.state === 'moving' && shock > 0.4 && Math.random() < 0.6) {
+            if (this.coverTier > 0) this.coverTier--;
+            this.pickCover();
+        }
+    }
+
+    resolveAIDamage(attacker, amount, hitInfo = null) {
+        if (!isHostile(attacker, this)) return AI_DAMAGE_FROM_AI;
+        if (hitInfo && hitInfo.headshot) return Math.max(this.hp, 1);
+
+        const weaponType = hitInfo && hitInfo.weaponType ? hitInfo.weaponType : 'rifle';
+        const distance = hitInfo && hitInfo.distance
+            ? hitInfo.distance
+            : attacker.mesh.position.distanceTo(this.mesh.position);
+        const distanceFactor = 1 - clamp(distance / (weaponType === 'turret' ? 75 : 55), 0, 1);
+        const attackerEfficiency = attacker.getCombatEfficiency ? attacker.getCombatEfficiency() : 0.8;
+        const targetExposure = this.getExposureForIncomingFire();
+        const fragility = clamp((1 - this.getNerve()) + (this.suppression * 0.3), 0, 1.2);
+
+        let lethalChance = 0.04
+            + (distanceFactor * 0.22)
+            + ((attackerEfficiency - 0.5) * 0.22)
+            + (targetExposure * 0.18)
+            + (fragility * 0.16);
+        if (weaponType === 'turret') lethalChance += 0.2;
+        if (attacker.role === 'push') lethalChance += 0.04;
+        if (attacker.role === 'suppress') lethalChance -= 0.03;
+        lethalChance = clamp(lethalChance, 0.03, weaponType === 'turret' ? 0.88 : 0.72);
+
+        const woundChance = clamp(lethalChance + 0.38 + (distanceFactor * 0.12), 0.25, 0.97);
+        const roll = Math.random();
+        if (roll < lethalChance) return Math.max(this.hp, weaponType === 'turret' ? 1.5 : 1);
+        if (roll < woundChance) return weaponType === 'turret'
+            ? 0.9 + (Math.random() * 0.8)
+            : 0.55 + (Math.random() * 0.55);
+        return AI_DAMAGE_FROM_AI;
+    }
+
     getTargetAimPosition(target) {
         const targetPos = new THREE.Vector3();
         if (target.isPlayer) {
@@ -1193,7 +1565,12 @@ export class AI {
         const dist = eyeStart.distanceTo(targetPos);
 
         let spread = (0.05 + (dist * 0.002)) * spreadMultiplier;
-        if (this.target && !this.target.isPlayer && !aimPos) spread *= 8.0;
+        if (this.target && !this.target.isPlayer && !aimPos) {
+            const accuracy = this.getCombatEfficiency();
+            const distancePenalty = 1.0 + clamp(dist / 55, 0, 1.2);
+            const targetPenalty = this.target.state === 'moving' ? 1.15 : 0.95;
+            spread *= clamp((4.8 - (accuracy * 2.2)) * distancePenalty * targetPenalty, 1.6, 7.0);
+        }
         dir.x += (Math.random() - 0.5) * spread;
         dir.y += (Math.random() - 0.5) * spread;
         dir.z += (Math.random() - 0.5) * spread;
@@ -1217,7 +1594,11 @@ export class AI {
             if (hit.object.userData.ai) {
                 const hitAI = hit.object.userData.ai;
                 if (hitAI.isPlayer) hitAI.takeDamage(1, this);
-                else hitAI.takeDamage(hit.object.name === "head" ? 99 : 1, this);
+                else hitAI.takeDamage(hit.object.name === "head" ? 99 : 1, this, {
+                    weaponType: 'rifle',
+                    headshot: hit.object.name === "head",
+                    distance: hit.distance,
+                });
             } else {
                 let normal = new THREE.Vector3(0, 1, 0);
                 if (hit.face) normal.copy(hit.face.normal).applyMatrix3(new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld)).normalize();
@@ -1253,7 +1634,10 @@ export class AI {
                 if (distAlongRay < hitDistance + 1.0) {
                     const distSq = closestPt.distanceToSquared(pos);
                     if (!t.isPlayer) {
-                        if (distSq < 16.0) t.alert(this);
+                        if (distSq < 16.0) {
+                            const proximity = 1.0 - clamp(Math.sqrt(distSq) / 4.0, 0, 1);
+                            t.alert(this, AI_SUPPRESSION_FROM_NEAR + (proximity * 0.18));
+                        }
                     } else {
                         if (distSq < 2.0) playNearMissSound();
                     }
@@ -1264,6 +1648,7 @@ export class AI {
 }
 
 export function spawnSoldiers(count) {
+    resetTeamCommanders();
     allies.forEach(a => scene.remove(a.mesh));
     enemies.forEach(e => scene.remove(e.mesh));
     allies.length  = 0;
