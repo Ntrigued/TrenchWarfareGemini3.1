@@ -75,3 +75,5 @@ export const AI_TUNNEL_CHECK_INTERVAL  = 1.5;  // seconds between volunteer chec
 export const AI_TUNNEL_LAUNCH_CHANCE   = 0.45; // chance an eligible soldier volunteers per check
 export const AI_TUNNEL_ENGAGE_RANGE    = 12;   // metres: raiders on the surface ignore enemies farther than this
 export const AI_TUNNEL_COVER_RANGE     = 8;    // metres a raider will dash to reach tunnel cover
+export const AI_TUNNEL_SIGHT_RANGE     = 30;   // metres a soldier underground can spot enemies ahead
+export const AI_TUNNEL_REAR_SIGHT      = 9;    // metres a soldier underground notices enemies behind him

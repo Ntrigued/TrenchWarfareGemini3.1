@@ -295,7 +295,7 @@ function __require(id) {
 }
 
 __define("js/ai.js", (exports, __require) => {
-const { AI_MOVE_SPEED, AI_DAMAGE_FROM_AI, AI_PEER_SEPARATION, AI_MEMORY_DURATION, AI_SEARCH_DURATION, AI_BLIND_FIRE_CHANCE, AI_COMMAND_PUSH_DURATION, AI_COMMAND_HOLD_DURATION, AI_COMMAND_FLANK_DURATION, AI_SUPPRESSION_DECAY, AI_SUPPRESSION_FROM_HIT, AI_SUPPRESSION_FROM_NEAR, AI_MORALE_RECOVERY, AI_MORALE_HIT_PENALTY, AI_MORALE_CASUALTY_PENALTY, AI_PERCEPTION_INTERVAL, AI_EXPOSURE_CACHE_TTL, AI_TARGET_CANDIDATES, AI_ATTACKER_MEMORY, AI_FRIENDLY_FIRE_CLEARANCE, AI_TUNNEL_MAX_ACTIVE, AI_TUNNEL_SPEED_FACTOR, AI_TUNNEL_CHECK_INTERVAL, AI_TUNNEL_LAUNCH_CHANCE, AI_TUNNEL_ENGAGE_RANGE, AI_TUNNEL_COVER_RANGE, TURRET_EXPLOSION_RADIUS } = __require("js/config.js");
+const { AI_MOVE_SPEED, AI_DAMAGE_FROM_AI, AI_PEER_SEPARATION, AI_MEMORY_DURATION, AI_SEARCH_DURATION, AI_BLIND_FIRE_CHANCE, AI_COMMAND_PUSH_DURATION, AI_COMMAND_HOLD_DURATION, AI_COMMAND_FLANK_DURATION, AI_SUPPRESSION_DECAY, AI_SUPPRESSION_FROM_HIT, AI_SUPPRESSION_FROM_NEAR, AI_MORALE_RECOVERY, AI_MORALE_HIT_PENALTY, AI_MORALE_CASUALTY_PENALTY, AI_PERCEPTION_INTERVAL, AI_EXPOSURE_CACHE_TTL, AI_TARGET_CANDIDATES, AI_ATTACKER_MEMORY, AI_FRIENDLY_FIRE_CLEARANCE, AI_TUNNEL_MAX_ACTIVE, AI_TUNNEL_SPEED_FACTOR, AI_TUNNEL_CHECK_INTERVAL, AI_TUNNEL_LAUNCH_CHANCE, AI_TUNNEL_ENGAGE_RANGE, AI_TUNNEL_COVER_RANGE, AI_TUNNEL_SIGHT_RANGE, AI_TUNNEL_REAR_SIGHT, TURRET_EXPLOSION_RADIUS } = __require("js/config.js");
 
 const { state, allies, enemies } = __require("js/state.js");
 
@@ -1154,7 +1154,7 @@ class AI {
                     if (this.seekTunnelCover(this.target)) break;
                     this.state           = 'aiming';
                     this.timer           = 0.6;
-                    this.shootDelay      = 0.15 + Math.random() * 0.2;
+                    this.shootDelay      = 0.12 + Math.random() * 0.15;
                     this.interruptedMove = true;
                     break;
                 }
@@ -1678,6 +1678,10 @@ class AI {
 
     // Notices nearby hostiles, weighting those in front of us or standing exposed.
     scanForThreats() {
+        if (this.underground || this.inStairwell) {
+            this.scanTunnelThreats();
+            return;
+        }
         let closestThreat = null;
         let closestDistSq = 25;
         const myPos = this.mesh.position;
@@ -1707,6 +1711,41 @@ class AI {
         if (this.state !== 'using_turret') {
             this.state      = 'aiming';
             this.shootDelay = 0.2 + Math.random() * 0.2;
+        }
+    }
+
+    // Underground the galleries are lit and straight, so anyone in line of
+    // sight ahead is seen at long range; to the sides and behind, less so.
+    scanTunnelThreats() {
+        const myPos = this.mesh.position;
+        _forward.set(0, 0, 1).applyAxisAngle(UP_AXIS, this.mesh.rotation.y);
+        let best = null;
+        let bestScore = Infinity;
+        this.forEachHostile(threat => {
+            const tPos = getEntityPosition(threat);
+            _toTarget.subVectors(tPos, myPos);
+            _toTarget.y = 0;
+            const dist = _toTarget.length();
+            if (dist > 0.001) _toTarget.divideScalar(dist);
+            const facing = _forward.dot(_toTarget);
+            const range = facing > 0.3 ? AI_TUNNEL_SIGHT_RANGE
+                        : facing > -0.3 ? AI_TUNNEL_SIGHT_RANGE * 0.6
+                        : AI_TUNNEL_REAR_SIGHT;
+            if (dist > range) return;
+            const exposure = this.calculateExposure(threat);
+            if (exposure <= 0) return;
+            const score = dist / exposure;
+            if (score < bestScore) { bestScore = score; best = threat; }
+        });
+
+        if (!best || this.target === best) return;
+        this.target = best;
+        this.rememberTarget(best, this.calculateExposure(best));
+        if (this.state === 'moving' || this.state === 'tunneling') this.interruptedMove = true;
+        if (this.state !== 'using_turret') {
+            this.state      = 'aiming';
+            this.timer      = 0.6;
+            this.shootDelay = 0.12 + Math.random() * 0.15;
         }
     }
 
@@ -2706,6 +2745,8 @@ const AI_TUNNEL_CHECK_INTERVAL  = 1.5;  // seconds between volunteer checks per 
 const AI_TUNNEL_LAUNCH_CHANCE   = 0.45; // chance an eligible soldier volunteers per check
 const AI_TUNNEL_ENGAGE_RANGE    = 12;   // metres: raiders on the surface ignore enemies farther than this
 const AI_TUNNEL_COVER_RANGE     = 8;    // metres a raider will dash to reach tunnel cover
+const AI_TUNNEL_SIGHT_RANGE     = 30;   // metres a soldier underground can spot enemies ahead
+const AI_TUNNEL_REAR_SIGHT      = 9;    // metres a soldier underground notices enemies behind him
 
 exports.FOG_COLOR = FOG_COLOR;
 
@@ -2822,6 +2863,10 @@ exports.AI_TUNNEL_LAUNCH_CHANCE = AI_TUNNEL_LAUNCH_CHANCE;
 exports.AI_TUNNEL_ENGAGE_RANGE = AI_TUNNEL_ENGAGE_RANGE;
 
 exports.AI_TUNNEL_COVER_RANGE = AI_TUNNEL_COVER_RANGE;
+
+exports.AI_TUNNEL_SIGHT_RANGE = AI_TUNNEL_SIGHT_RANGE;
+
+exports.AI_TUNNEL_REAR_SIGHT = AI_TUNNEL_REAR_SIGHT;
 });
 
 __define("js/effects.js", (exports, __require) => {

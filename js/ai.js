@@ -10,6 +10,7 @@ import { AI_MOVE_SPEED, AI_DAMAGE_FROM_AI, AI_PEER_SEPARATION,
          AI_PERCEPTION_INTERVAL, AI_EXPOSURE_CACHE_TTL, AI_TARGET_CANDIDATES,
          AI_ATTACKER_MEMORY, AI_FRIENDLY_FIRE_CLEARANCE,
          AI_TUNNEL_MAX_ACTIVE, AI_TUNNEL_SPEED_FACTOR, AI_TUNNEL_CHECK_INTERVAL, AI_TUNNEL_LAUNCH_CHANCE, AI_TUNNEL_ENGAGE_RANGE, AI_TUNNEL_COVER_RANGE,
+         AI_TUNNEL_SIGHT_RANGE, AI_TUNNEL_REAR_SIGHT,
          TURRET_EXPLOSION_RADIUS } from './config.js';
 import { state, allies, enemies } from './state.js';
 import { scene, camera } from './scene.js';
@@ -846,7 +847,7 @@ export class AI {
                     if (this.seekTunnelCover(this.target)) break;
                     this.state           = 'aiming';
                     this.timer           = 0.6;
-                    this.shootDelay      = 0.15 + Math.random() * 0.2;
+                    this.shootDelay      = 0.12 + Math.random() * 0.15;
                     this.interruptedMove = true;
                     break;
                 }
@@ -1370,6 +1371,10 @@ export class AI {
 
     // Notices nearby hostiles, weighting those in front of us or standing exposed.
     scanForThreats() {
+        if (this.underground || this.inStairwell) {
+            this.scanTunnelThreats();
+            return;
+        }
         let closestThreat = null;
         let closestDistSq = 25;
         const myPos = this.mesh.position;
@@ -1399,6 +1404,41 @@ export class AI {
         if (this.state !== 'using_turret') {
             this.state      = 'aiming';
             this.shootDelay = 0.2 + Math.random() * 0.2;
+        }
+    }
+
+    // Underground the galleries are lit and straight, so anyone in line of
+    // sight ahead is seen at long range; to the sides and behind, less so.
+    scanTunnelThreats() {
+        const myPos = this.mesh.position;
+        _forward.set(0, 0, 1).applyAxisAngle(UP_AXIS, this.mesh.rotation.y);
+        let best = null;
+        let bestScore = Infinity;
+        this.forEachHostile(threat => {
+            const tPos = getEntityPosition(threat);
+            _toTarget.subVectors(tPos, myPos);
+            _toTarget.y = 0;
+            const dist = _toTarget.length();
+            if (dist > 0.001) _toTarget.divideScalar(dist);
+            const facing = _forward.dot(_toTarget);
+            const range = facing > 0.3 ? AI_TUNNEL_SIGHT_RANGE
+                        : facing > -0.3 ? AI_TUNNEL_SIGHT_RANGE * 0.6
+                        : AI_TUNNEL_REAR_SIGHT;
+            if (dist > range) return;
+            const exposure = this.calculateExposure(threat);
+            if (exposure <= 0) return;
+            const score = dist / exposure;
+            if (score < bestScore) { bestScore = score; best = threat; }
+        });
+
+        if (!best || this.target === best) return;
+        this.target = best;
+        this.rememberTarget(best, this.calculateExposure(best));
+        if (this.state === 'moving' || this.state === 'tunneling') this.interruptedMove = true;
+        if (this.state !== 'using_turret') {
+            this.state      = 'aiming';
+            this.timer      = 0.6;
+            this.shootDelay = 0.12 + Math.random() * 0.15;
         }
     }
 
