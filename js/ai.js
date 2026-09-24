@@ -9,11 +9,12 @@ import { AI_MOVE_SPEED, AI_DAMAGE_FROM_AI, AI_PEER_SEPARATION,
          AI_MORALE_RECOVERY, AI_MORALE_HIT_PENALTY, AI_MORALE_CASUALTY_PENALTY,
          AI_PERCEPTION_INTERVAL, AI_EXPOSURE_CACHE_TTL, AI_TARGET_CANDIDATES,
          AI_ATTACKER_MEMORY, AI_FRIENDLY_FIRE_CLEARANCE,
+         AI_TUNNEL_MAX_ACTIVE, AI_TUNNEL_SPEED_FACTOR, AI_TUNNEL_CHECK_INTERVAL, AI_TUNNEL_LAUNCH_CHANCE, AI_TUNNEL_ENGAGE_RANGE,
          TURRET_EXPLOSION_RADIUS } from './config.js';
 import { state, allies, enemies } from './state.js';
 import { scene, camera } from './scene.js';
 import { playPositionalSound, playSoundFile, playNearMissSound } from './audio.js';
-import { worldMeshes, getTerrainHeight, resolveObstacles,
+import { getTerrainHeight,
          allyCoversFront, allyCoversBack, enemyCoversFront, enemyCoversBack,
          allyPathCovers, enemyPathCovers, midCoversAlly, midCoversEnemy } from './world.js';
 import { playerRoot, playerAI } from './player.js';
@@ -21,6 +22,8 @@ import { raycaster } from './raycast.js';
 import { isSpotVisibleToPlayer } from './raycast.js';
 import { showMuzzleFlash, createImpact, createTracer } from './effects.js';
 import { shootTurret } from './turretShooting.js';
+import { resolveMovement, updateLayer, getGroundHeight, canPerceive, getOcclusionMeshes } from './tunnels.js';
+import { TUNNELS, STAIR_TOP_X, STAIR_BOTTOM_X, CHAMBER_HALF_Z, TRENCH_WALKWAY_Z } from './tunnelLayout.js';
 
 // --- AI materials ---
 const allyMat        = new THREE.MeshLambertMaterial({ color: 0x7a6845 });
@@ -189,6 +192,12 @@ function setCommanderPhase(commander, livingCount, mode) {
     clampRoleQuotas(quotas, livingCount);
     commander.roleQuotas = quotas;
     commander.roleCounts = { hold: 0, suppress: 0, flank: 0, push: 0 };
+
+    // Volunteers sent through the mine tunnels to raid the enemy trench.
+    if (livingCount < 6) commander.tunnelQuota = 0;
+    else if (mode === 'hold') commander.tunnelQuota = 1;
+    else commander.tunnelQuota = livingCount >= 20 ? 3 : 2;
+    commander.tunnelLaunched = 0;
 }
 
 function initCommander(commander, mode = 'hold') {
@@ -201,6 +210,8 @@ function initCommander(commander, mode = 'hold') {
     commander.roleCounts = { hold: 0, suppress: 0, flank: 0, push: 0 };
     commander.rolePriority = ['hold', 'suppress', 'flank', 'push'];
     commander.defaultRole = 'hold';
+    commander.tunnelQuota = 0;
+    commander.tunnelLaunched = 0;
 }
 
 function updateCommanderState(commander, team, opposingTeam, dt) {
@@ -575,6 +586,10 @@ export class AI {
         this.perceptionTimer    = Math.random() * AI_PERCEPTION_INTERVAL;
         this.blockedShots       = 0;
         this.exposureCache.clear();
+        this.tunnelMission      = null;
+        this.underground        = false;
+        this.inStairwell        = false;
+        this.tunnelCheckTimer   = Math.random() * AI_TUNNEL_CHECK_INTERVAL;
         this.trenchLevel  = Math.random() > 0.5 ? 'front' : 'back';
         this.crouchT      = 1.0;
         this.aimT         = 0.0;
@@ -610,6 +625,12 @@ export class AI {
         const isPlayerShootingAlly = attacker.isPlayer && !this.isEnemy;
         const isHostileThreat = !isFriendlyFire && !isPlayerShootingAlly;
 
+        // Raiders heading for a tunnel keep their heads down rather than trade fire at range.
+        if (isHostileThreat && this.isRaidDistraction(attacker)) {
+            if (severity > 0) this.applySuppression(severity);
+            return;
+        }
+
         if (isHostileThreat) {
             this.recentAttacker     = attacker;
             this.recentAttackerTime = nowSeconds();
@@ -625,7 +646,7 @@ export class AI {
         }
         if (isHostileThreat && severity > 0) this.applySuppression(severity, attacker);
 
-        if (this.state === 'moving') {
+        if (this.state === 'moving' || this.state === 'tunneling') {
             this.state           = 'aiming';
             this.timer           = 0.4 + Math.random() * 0.4;
             this.shootDelay      = 0;
@@ -704,7 +725,7 @@ export class AI {
                 this.crouchT += (0 - this.crouchT) * 5 * dt;
                 this.torso.rotation.x    = this.crouchT * 0.4;
                 this.headGroup.rotation.x = -this.torso.rotation.x;
-                this.mesh.position.y = getTerrainHeight(this.mesh.position.x, this.mesh.position.z);
+                this.mesh.position.y = getGroundHeight(this.mesh.position.x, this.mesh.position.z, this.underground);
             } else if (this.corpseDelay > 0) {
                 this.corpseDelay -= dt;
             } else {
@@ -771,10 +792,49 @@ export class AI {
             this.rememberTarget(this.target, 0.35);
         }
 
+        this.tunnelCheckTimer -= dt;
+        if (this.tunnelCheckTimer <= 0) {
+            this.tunnelCheckTimer = AI_TUNNEL_CHECK_INTERVAL * (0.75 + Math.random() * 0.5);
+            this.considerTunnelMission();
+        }
+
+        // Raiders keep following their tunnel route instead of seeking cover,
+        // only stopping to fight enemies close by or met underground.
+        if (this.tunnelMission) {
+            const engaged = this.target && !this.target.dead && !this.isRaidDistraction(this.target);
+            if (!engaged) {
+                this.target = null;
+                this.isBlindFiring = false;
+                if (this.state === 'hidden') {
+                    if (this.timer <= 0) this.state = 'tunneling';
+                } else if (this.state !== 'tunneling') {
+                    this.state = 'tunneling';
+                }
+            } else if (this.state === 'moving') {
+                this.state = 'tunneling';
+            } else if (this.state === 'hidden' && this.timer <= 0) {
+                this.state = this.checkLOS(this.target) ? 'popping' : 'tunneling';
+                this.timer = 0.2;
+            }
+        }
+
         let targetCrouch = 0.0;
         let targetAim    = 0.0;
 
         switch (this.state) {
+
+            case 'tunneling': {
+                targetCrouch = 0.55;
+                if (this.target && !this.target.dead && this.checkLOS(this.target)) {
+                    this.state           = 'aiming';
+                    this.timer           = 0.6;
+                    this.shootDelay      = 0.15 + Math.random() * 0.2;
+                    this.interruptedMove = true;
+                    break;
+                }
+                this.followTunnelRoute(dt);
+                break;
+            }
 
             case 'moving': {
                 targetCrouch = 0.5;
@@ -1109,7 +1169,8 @@ export class AI {
         // Walk animation
         let legSwing = 0;
         let armSwing = 0;
-        if (this.state === 'moving') {
+        const isWalking = this.state === 'moving' || this.state === 'tunneling';
+        if (isWalking) {
             this.walkTime += dt * 10;
             legSwing = Math.sin(this.walkTime) * 0.6;
             armSwing = Math.sin(this.walkTime) * 0.3;
@@ -1135,7 +1196,7 @@ export class AI {
             IDLE_GUN_ROT.y + (AIM_GUN_ROT.y - IDLE_GUN_ROT.y) * this.aimT,
             IDLE_GUN_ROT.z + (AIM_GUN_ROT.z - IDLE_GUN_ROT.z) * this.aimT
         );
-        if (this.state === 'moving') {
+        if (isWalking) {
             this.weaponGroup.position.y += Math.sin(this.walkTime * 2) * 0.02;
             this.weaponGroup.rotation.x += Math.sin(this.walkTime) * 0.05;
         }
@@ -1158,7 +1219,7 @@ export class AI {
         const peers = this.isEnemy ? enemies : allies;
         const separationSq = AI_PEER_SEPARATION * AI_PEER_SEPARATION;
         peers.forEach(peer => {
-            if (peer !== this && !peer.dead) {
+            if (peer !== this && !peer.dead && peer.underground === this.underground) {
                 const cdx = this.mesh.position.x - peer.mesh.position.x;
                 const cdz = this.mesh.position.z - peer.mesh.position.z;
                 const distSq = cdx*cdx + cdz*cdz;
@@ -1175,11 +1236,14 @@ export class AI {
             }
         });
 
-        // Obstacle collision
+        // Obstacle collision (per layer) and stairwell layer changes
         let aiPos2D = { x: this.mesh.position.x, z: this.mesh.position.z };
-        resolveObstacles(aiPos2D, 0.4);
+        resolveMovement(aiPos2D, 0.4, this.underground, !!this.tunnelMission);
         this.mesh.position.x = aiPos2D.x;
         this.mesh.position.z = aiPos2D.z;
+        const layer = updateLayer(aiPos2D.x, aiPos2D.z, this.underground);
+        this.underground = layer.underground;
+        this.inStairwell = layer.inStairwell;
 
         // Z-axis bounds by tier
         let minZ, maxZ;
@@ -1196,21 +1260,25 @@ export class AI {
             else if (this.trenchLevel === 'front') { minZ = -21.8; maxZ = -18.2; }
             else                               { minZ = -36.2; maxZ = -26.8; }
         }
-        this.mesh.position.z = Math.max(minZ, Math.min(maxZ, this.mesh.position.z));
+        if (!this.tunnelMission && !this.underground) {
+            this.mesh.position.z = Math.max(minZ, Math.min(maxZ, this.mesh.position.z));
+        }
 
         // Snap to cover when stationary
-        if (this.state !== 'moving' && this.state !== 'using_turret' && this.targetCover && !this.targetCover.isTurret) {
+        if (this.state !== 'moving' && this.state !== 'using_turret' && !this.tunnelMission &&
+            this.targetCover && !this.targetCover.isTurret) {
             this.mesh.position.x += (this.targetCover.x - this.mesh.position.x) * 2 * dt;
             this.mesh.position.z += (this.targetCover.z - this.mesh.position.z) * 2 * dt;
         }
 
-        this.mesh.position.y = getTerrainHeight(this.mesh.position.x, this.mesh.position.z);
+        this.mesh.position.y = getGroundHeight(this.mesh.position.x, this.mesh.position.z, this.underground);
     }
 
     // Fraction (0..1) of the target's head/torso/legs visible from our eyes.
     // Results are cached briefly per target: several states query the same
     // target every frame, and each check costs three raycasts.
     calculateExposure(target) {
+        if (!canPerceive(this, target)) return 0;
         const eyeHeight = 1.55 - (this.crouchT * 0.45);
         const now = nowSeconds();
         const cached = this.exposureCache.get(target);
@@ -1246,6 +1314,7 @@ export class AI {
         }
 
         const base = getEntityPosition(target);
+        const occluders = getOcclusionMeshes(this, target);
         let hits = 0;
         for (let i = 0; i < probeHeights.length; i++) {
             _probe.copy(base);
@@ -1254,7 +1323,7 @@ export class AI {
             _dir.subVectors(_probe, _eye).divideScalar(dist);
             raycaster.set(_eye, _dir);
             raycaster.far = dist;
-            const intersects = raycaster.intersectObjects(worldMeshes, false);
+            const intersects = raycaster.intersectObjects(occluders, false);
             if (intersects.length === 0) hits++;
         }
         raycaster.far = Infinity;
@@ -1265,12 +1334,13 @@ export class AI {
         return this.calculateExposure(target) > 0;
     }
 
+    // Visits living hostiles this soldier could possibly see (same layer or via a stairwell).
     forEachHostile(fn) {
         const opposing = getEnemyMembers(this);
         for (let i = 0; i < opposing.length; i++) {
-            if (!opposing[i].dead) fn(opposing[i]);
+            if (!opposing[i].dead && canPerceive(this, opposing[i])) fn(opposing[i]);
         }
-        if (this.isEnemy && !playerAI.dead) fn(playerAI);
+        if (this.isEnemy && !playerAI.dead && canPerceive(this, playerAI)) fn(playerAI);
     }
 
     // Notices nearby hostiles, weighting those in front of us or standing exposed.
@@ -1281,6 +1351,7 @@ export class AI {
         _forward.set(0, 0, 1).applyAxisAngle(UP_AXIS, this.mesh.rotation.y);
 
         this.forEachHostile(threat => {
+            if (this.isRaidDistraction(threat)) return;
             const tPos = getEntityPosition(threat);
             let perceivedDistSq = myPos.distanceToSquared(tPos);
             _toTarget.subVectors(tPos, myPos).normalize();
@@ -1370,10 +1441,12 @@ export class AI {
         const team = getTeamMembers(this);
         for (let i = 0; i < team.length; i++) {
             const friend = team[i];
-            if (friend === this || friend.dead) continue;
+            if (friend === this || friend.dead || !canPerceive(this, friend)) continue;
             if (predicate(getBodyCenter(friend, _friendPos))) return true;
         }
-        if (!this.isEnemy && !playerAI.dead) return predicate(getBodyCenter(playerAI, _friendPos));
+        if (!this.isEnemy && !playerAI.dead && canPerceive(this, playerAI)) {
+            return predicate(getBodyCenter(playerAI, _friendPos));
+        }
         return false;
     }
 
@@ -1444,6 +1517,154 @@ export class AI {
         t.pitchGroup.rotation.x += (targetPitch - t.pitchGroup.rotation.x) * rate * dt;
 
         return outOfArc ? Math.PI : yawDiff;
+    }
+
+    // ------------------------------------------------------------
+    // Tunnel raids
+    // ------------------------------------------------------------
+
+    isInOwnFrontTrench() {
+        const depth = (this.isEnemy ? 1 : -1) * this.mesh.position.z;
+        return depth > 17.8 && depth < 22.0 && !this.underground && !this.inStairwell;
+    }
+
+    considerTunnelMission() {
+        if (this.tunnelMission || this.state === 'using_turret' || !this.isInOwnFrontTrench()) return;
+        if (this.getNerve() < 0.5 || Math.random() > AI_TUNNEL_LAUNCH_CHANCE) return;
+        const commander = getCommander(this.isEnemy);
+        if (commander.tunnelLaunched >= commander.tunnelQuota) return;
+        const activeRaiders = getTeamMembers(this).filter(s => !s.dead && s.tunnelMission).length;
+        if (activeRaiders >= AI_TUNNEL_MAX_ACTIVE) return;
+
+        // Usually take the nearest tunnel, sometimes the far one.
+        const nearest = this.mesh.position.x < 0 ? TUNNELS[0] : TUNNELS[1];
+        const tunnel = Math.random() < 0.75 ? nearest : TUNNELS.find(t => t !== nearest);
+        commander.tunnelLaunched++;
+        this.startTunnelMission(tunnel);
+    }
+
+    // True for surface enemies a raider should ignore while making for the tunnel.
+    isRaidDistraction(target) {
+        if (!this.tunnelMission || !target || this.underground || this.inStairwell) return false;
+        const range = AI_TUNNEL_ENGAGE_RANGE;
+        return getEntityPosition(target).distanceToSquared(this.mesh.position) > range * range;
+    }
+
+    startTunnelMission(tunnel) {
+        this.tunnelMission = {
+            tunnel,
+            waypoints: this.buildTunnelRoute(tunnel),
+            index: 0,
+            bestDist: Infinity,
+            stallTimer: 0,
+        };
+        this.isAdvancing = true;
+        if (this.targetCover && this.targetCover.isTurret && this.targetCover.turret.user === this) {
+            this.targetCover.turret.user = null;
+        }
+        this.target = null;
+        this.isBlindFiring = false;
+        this.clearMemory();
+        this.state = 'tunneling';
+    }
+
+    // Walk along our trench to the dugout, down through the gallery and
+    // chamber, and up the far stairwell into the enemy front trench.
+    buildTunnelRoute(tunnel) {
+        const s = tunnel.xSign;
+        const own = this.isEnemy ? tunnel.enemyStair : tunnel.allyStair;
+        const far = this.isEnemy ? tunnel.allyStair : tunnel.enemyStair;
+        const ownZ = this.isEnemy ? 1 : -1;
+        const walkwayZ = ownZ * TRENCH_WALKWAY_Z;
+        const gx = tunnel.galleryX;
+        const x = this.mesh.position.x;
+        const entryX = s * (STAIR_TOP_X - 1.5);
+        const rearZ = ownZ * 21.0;   // lane behind the cover crates, along the parapet
+        const route = [];
+
+        // Step back from the crate line, then follow the rear lane. Dugouts
+        // block that lane, so pass them on the walkway side instead.
+        const dir = Math.sign(entryX - x) || 1;
+        const besideDugout = Math.abs(x) > STAIR_TOP_X - 1.5 && Math.abs(x) < STAIR_BOTTOM_X + 1.5;
+        if (Math.abs(entryX - x) > 3 && !besideDugout) route.push({ x, z: rearZ });
+        const pathMin = Math.min(x, entryX), pathMax = Math.max(x, entryX);
+        [-1, 1].map(side => [side * (STAIR_TOP_X - 1.5), side * (STAIR_BOTTOM_X + 1.5)])
+            .filter(([a, b]) => Math.max(a, b) > pathMin && Math.min(a, b) < pathMax)
+            .map(ends => ends.sort((a, b) => (a - b) * dir))
+            .sort((a, b) => (a[0] - b[0]) * dir)
+            .forEach(([nearEnd, farEnd]) => {
+                if ((nearEnd - x) * dir > 0) route.push({ x: nearEnd, z: rearZ }, { x: nearEnd, z: walkwayZ });
+                route.push({ x: farEnd, z: walkwayZ });
+                if (farEnd !== entryX) route.push({ x: farEnd, z: rearZ });
+            });
+
+        route.push(
+            { x: entryX,                   z: own.centerZ },
+            { x: own.topX,                 z: own.centerZ },
+            { x: own.bottomX,              z: own.centerZ },
+            { x: gx,                       z: own.centerZ },
+            { x: gx,                       z: ownZ * (CHAMBER_HALF_Z - 0.5) },
+            { x: gx,                       z: 0 },
+            { x: gx,                       z: -ownZ * (CHAMBER_HALF_Z - 0.5) },
+            { x: gx,                       z: far.centerZ },
+            { x: far.bottomX,              z: far.centerZ },
+            { x: far.topX,                 z: far.centerZ },
+            { x: s * (STAIR_TOP_X - 2.5),  z: far.centerZ },
+        );
+        return route;
+    }
+
+    followTunnelRoute(dt) {
+        const mission = this.tunnelMission;
+        const wp = mission.waypoints[mission.index];
+        const dx = wp.x - this.mesh.position.x;
+        const dz = wp.z - this.mesh.position.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+
+        if (dist < 0.35) {
+            mission.index++;
+            mission.bestDist = Infinity;
+            mission.stallTimer = 0;
+            if (mission.index >= mission.waypoints.length) this.completeTunnelMission();
+            return;
+        }
+
+        // If blocked for a while, skip ahead underground or give up on the surface.
+        if (dist < mission.bestDist - 0.25) {
+            mission.bestDist = dist;
+            mission.stallTimer = 0;
+        } else if ((mission.stallTimer += dt) > 3.5) {
+            mission.stallTimer = 0;
+            mission.bestDist = Infinity;
+            if (this.underground || this.inStairwell) {
+                mission.index = Math.min(mission.index + 1, mission.waypoints.length - 1);
+            } else {
+                this.abortTunnelMission();
+            }
+            return;
+        }
+
+        const speed = AI_MOVE_SPEED * AI_TUNNEL_SPEED_FACTOR * (1.0 - (this.suppression * 0.18));
+        const step = Math.min(speed * dt, dist);
+        this.mesh.position.x += (dx / dist) * step;
+        this.mesh.position.z += (dz / dist) * step;
+        const diff = wrapAngle(Math.atan2(dx, dz) - this.mesh.rotation.y);
+        this.mesh.rotation.y += diff * 10 * dt;
+    }
+
+    completeTunnelMission() {
+        // Out in the enemy front trench: fight from their cover positions.
+        this.tunnelMission = null;
+        this.isAdvancing   = true;
+        this.coverTier     = 3;
+        this.pickCover();
+        this.state = 'moving';
+    }
+
+    abortTunnelMission() {
+        this.tunnelMission = null;
+        this.pickCover();
+        this.state = 'moving';
     }
 
     releaseRole() {
@@ -1743,11 +1964,11 @@ export class AI {
             playPositionalSound(visualStart, 'gunshot');
         }
 
-        const hitTargets = [playerAI.mesh];
+        const hitTargets = canPerceive(this, playerAI) ? [playerAI.mesh] : [];
         for (const soldier of [...allies, ...enemies]) {
-            if (soldier !== this && soldier.mesh.visible) hitTargets.push(soldier.mesh);
+            if (soldier !== this && soldier.mesh.visible && canPerceive(this, soldier)) hitTargets.push(soldier.mesh);
         }
-        const intersects = raycaster.intersectObjects([...worldMeshes, ...hitTargets], true);
+        const intersects = raycaster.intersectObjects([...getOcclusionMeshes(this), ...hitTargets], true);
 
         let hitDistance = 200;
         if (intersects.length > 0) {
@@ -1786,7 +2007,7 @@ export class AI {
         const hitPool   = [...allies, ...enemies, playerAI];
         let closestPt   = new THREE.Vector3();
         hitPool.forEach(t => {
-            if (!t.dead) {
+            if (!t.dead && canPerceive(this, t)) {
                 const posOffset = t.isPlayer
                     ? ((state.isProne || state.slideTimer > 0) ? 0.15 : (state.isCrouched ? 0.4 : 1.0))
                     : (1.0 - (t.crouchT * 0.45));

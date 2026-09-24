@@ -3,6 +3,7 @@
 // ================================================================
 
 import { scene } from './scene.js';
+import { STAIRWELLS } from './tunnelLayout.js';
 
 // --- Shared state ---
 export const worldMeshes        = [];
@@ -25,8 +26,8 @@ export function getTerrainHeight(x, z) {
 }
 
 // --- Collision resolution ---
-export function resolveObstacles(pos, radius) {
-    for (let obs of collisionObstacles) {
+export function resolveObstacles(pos, radius, obstacles = collisionObstacles) {
+    for (let obs of obstacles) {
         let closestX = Math.max(obs.minX, Math.min(pos.x, obs.maxX));
         let closestZ = Math.max(obs.minZ, Math.min(pos.z, obs.maxZ));
         if (pos.x >= obs.minX && pos.x <= obs.maxX && pos.z >= obs.minZ && pos.z <= obs.maxZ) {
@@ -58,12 +59,32 @@ export const groundMat = new THREE.MeshLambertMaterial({ color: 0x3a4530 });
 export const wallMat   = new THREE.MeshLambertMaterial({ color: 0x4a3c2b });
 export const woodMat   = new THREE.MeshLambertMaterial({ color: 0x3d2817 });
 
-// --- Base ground plane ---
-const baseFloor = new THREE.Mesh(new THREE.PlaneGeometry(200, 100), groundMat);
-baseFloor.rotation.x = -Math.PI / 2;
-baseFloor.position.set(0, -1.2, 0);
-scene.add(baseFloor);
-worldMeshes.push(baseFloor);
+// --- Base ground plane (with holes cut for the tunnel stairwells) ---
+function buildFloorWithHoles(minX, maxX, minZ, maxZ, y, holes) {
+    const xs = [...new Set([minX, maxX, ...holes.flatMap(h => [h.minX, h.maxX])])].sort((a, b) => a - b);
+    const zs = [...new Set([minZ, maxZ, ...holes.flatMap(h => [h.minZ, h.maxZ])])].sort((a, b) => a - b);
+    const inHole = (x, z) => holes.some(h => x > h.minX && x < h.maxX && z > h.minZ && z < h.maxZ);
+
+    for (let j = 0; j < zs.length - 1; j++) {
+        const z0 = zs[j], z1 = zs[j + 1];
+        let stripStart = null;
+        // Merge consecutive solid cells in this row into one strip.
+        for (let i = 0; i <= xs.length - 1; i++) {
+            const solid = i < xs.length - 1 && !inHole((xs[i] + xs[i + 1]) / 2, (z0 + z1) / 2);
+            if (solid && stripStart === null) stripStart = xs[i];
+            if (!solid && stripStart !== null) {
+                const x1 = xs[i];
+                const strip = new THREE.Mesh(new THREE.PlaneGeometry(x1 - stripStart, z1 - z0), groundMat);
+                strip.rotation.x = -Math.PI / 2;
+                strip.position.set((stripStart + x1) / 2, y, (z0 + z1) / 2);
+                scene.add(strip);
+                worldMeshes.push(strip);
+                stripStart = null;
+            }
+        }
+    }
+}
+buildFloorWithHoles(-100, 100, -50, 50, -1.2, STAIRWELLS);
 
 // --- No Man's Land raised platform regions ---
 const nmlRegions = [
