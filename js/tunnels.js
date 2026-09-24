@@ -20,22 +20,86 @@ const tunnelObstacles = [];   // props inside the galleries
 const stairObstacles = STAIRWELLS.map(s => ({ minX: s.minX, maxX: s.maxX, minZ: s.minZ, maxZ: s.maxZ }));
 const WALKABLE = TUNNELS.flatMap(t => t.walkable);
 
+// --- Lighting ---
+// Scene lights have no shadows, so surface explosions and battle flashes
+// would light the tunnels through the ground. Underground geometry is
+// therefore unlit and instead carries lantern light baked into its vertex
+// colours once the tunnels are built.
+const bakeQueue = [];
+const bakeLights = [];
+const AMBIENT = [0.34, 0.3, 0.26];
+const LANTERN_LIGHT  = { color: [1.0, 0.72, 0.42], strength: 1.9, range: 14 };
+const DAYLIGHT_LIGHT = { color: [0.75, 0.8, 0.9],  strength: 1.6, range: 8 };
+
+function bakedMaterial(color) {
+    const mat = new THREE.MeshBasicMaterial({ color, vertexColors: true });
+    mat.userData.baked = true;
+    return mat;
+}
+
 // --- Materials ---
-const earthMat   = new THREE.MeshLambertMaterial({ color: 0x2b2218 });
-const floorMat   = new THREE.MeshLambertMaterial({ color: 0x241c14 });
-const timberMat  = new THREE.MeshLambertMaterial({ color: 0x4a3520 });
-const sandbagMat = new THREE.MeshLambertMaterial({ color: 0x6b5f45 });
+const earthMat   = bakedMaterial(0x2b2218);
+const floorMat   = bakedMaterial(0x241c14);
+const timberMat  = bakedMaterial(0x4a3520);
+const sandbagMat = bakedMaterial(0x6b5f45);
+const crateMat   = bakedMaterial(0x5c4326);
+const cartMat    = bakedMaterial(0x3b3b38);
+const darkMat    = bakedMaterial(0x1c1c1a);
 const lanternMat = new THREE.MeshBasicMaterial({ color: 0xffc070 });
+// Above-ground parts of the dugouts use normal scene lighting.
+const surfaceEarthMat   = new THREE.MeshLambertMaterial({ color: 0x4a3c2b });
+const surfaceTimberMat  = new THREE.MeshLambertMaterial({ color: 0x4a3520 });
+const surfaceSandbagMat = new THREE.MeshLambertMaterial({ color: 0x6b5f45 });
 
 const WALL_T = 0.3;
 const WALL_BOTTOM_Y = TUNNEL_FLOOR_Y - 0.2;
 
 function addBox(minX, maxX, minY, maxY, minZ, maxZ, mat, lists = []) {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(maxX - minX, maxY - minY, maxZ - minZ), mat);
+    const w = maxX - minX, h = maxY - minY, d = maxZ - minZ;
+    let geometry;
+    if (mat.userData.baked) {
+        // Subdivide so baked lighting can vary across long walls.
+        const segs = len => Math.max(1, Math.min(48, Math.ceil(len / 1.2)));
+        geometry = new THREE.BoxGeometry(w, h, d, segs(w), segs(h), segs(d));
+    } else {
+        geometry = new THREE.BoxGeometry(w, h, d);
+    }
+    const mesh = new THREE.Mesh(geometry, mat);
     mesh.position.set((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
     scene.add(mesh);
     lists.forEach(list => list.push(mesh));
+    if (mat.userData.baked) bakeQueue.push(mesh);
     return mesh;
+}
+
+// Writes lantern and daylight into the vertex colours of every tunnel mesh.
+function bakeTunnelLighting() {
+    const v = new THREE.Vector3();
+    const n = new THREE.Vector3();
+    bakeQueue.forEach(mesh => {
+        const pos = mesh.geometry.attributes.position;
+        const nor = mesh.geometry.attributes.normal;
+        const colors = new Float32Array(pos.count * 3);
+        for (let i = 0; i < pos.count; i++) {
+            v.fromBufferAttribute(pos, i).add(mesh.position);
+            n.fromBufferAttribute(nor, i);
+            let r = AMBIENT[0], g = AMBIENT[1], b = AMBIENT[2];
+            for (const light of bakeLights) {
+                const dx = light.x - v.x, dy = light.y - v.y, dz = light.z - v.z;
+                const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                if (dist >= light.range) continue;
+                const facing = dist > 0.001 ? Math.max(0, (n.x * dx + n.y * dy + n.z * dz) / dist) : 1;
+                const f = light.strength * Math.pow(1 - dist / light.range, 1.5) * (0.3 + 0.7 * facing);
+                r += light.color[0] * f;
+                g += light.color[1] * f;
+                b += light.color[2] * f;
+            }
+            colors[i * 3] = r;
+            colors[i * 3 + 1] = g;
+            colors[i * 3 + 2] = b;
+        }
+        mesh.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    });
 }
 
 // Splits [from, to] into solid pieces around the given gaps.
@@ -51,23 +115,53 @@ function solidSpans(from, to, gaps) {
 }
 
 // Wall running along z at a fixed x; `outward` is the side (+1/-1) it thickens toward.
-function wallAlongZ(x, outward, zFrom, zTo, gaps, minY, maxY, lists) {
+function wallAlongZ(x, outward, zFrom, zTo, gaps, minY, maxY, lists, mat = earthMat) {
     const x0 = outward > 0 ? x : x - WALL_T;
     solidSpans(zFrom, zTo, gaps).forEach(([z0, z1]) =>
-        addBox(x0, x0 + WALL_T, minY, maxY, z0, z1, earthMat, lists));
+        addBox(x0, x0 + WALL_T, minY, maxY, z0, z1, mat, lists));
 }
 
-function wallAlongX(z, outward, xFrom, xTo, gaps, minY, maxY, lists) {
+function wallAlongX(z, outward, xFrom, xTo, gaps, minY, maxY, lists, mat = earthMat) {
     const z0 = outward > 0 ? z : z - WALL_T;
     solidSpans(xFrom, xTo, gaps).forEach(([x0, x1]) =>
-        addBox(x0, x1, minY, maxY, z0, z0 + WALL_T, earthMat, lists));
+        addBox(x0, x1, minY, maxY, z0, z0 + WALL_T, mat, lists));
 }
 
 function addLantern(x, y, z) {
     addBox(x - 0.08, x + 0.08, y - 0.12, y + 0.12, z - 0.08, z + 0.08, lanternMat);
-    const light = new THREE.PointLight(0xffb060, 1.4, 13, 1.5);
-    light.position.set(x, y, z);
-    scene.add(light);
+    bakeLights.push({ x, y, z, ...LANTERN_LIGHT });
+}
+
+// Builds one piece of tunnel cover; it blocks movement, sight and bullets.
+function buildObstacle(o) {
+    const lists = [tunnelMeshes];
+    const y0 = TUNNEL_FLOOR_Y;
+    const y1 = TUNNEL_FLOOR_Y + o.height;
+    const w = o.maxX - o.minX;
+    if (o.kind === 'sandbags') {
+        // Two courses of bags, the top one slightly narrower.
+        addBox(o.minX, o.maxX, y0, y0 + o.height * 0.55, o.minZ, o.maxZ, sandbagMat, lists);
+        addBox(o.minX + 0.08, o.maxX - 0.08, y0 + o.height * 0.55, y1, o.minZ + 0.05, o.maxZ - 0.05, sandbagMat, lists);
+    } else if (o.kind === 'crates') {
+        // A stack of two crates beside a taller one.
+        const split = o.minX + w * 0.55;
+        addBox(o.minX, split, y0, y1, o.minZ, o.maxZ, timberMat, lists);
+        addBox(split + 0.04, o.maxX, y0, y0 + o.height * 0.7, o.minZ + 0.1, o.maxZ - 0.1, crateMat, lists);
+    } else if (o.kind === 'timber') {
+        // Pile of spare shoring beams.
+        const layers = 4;
+        for (let i = 0; i < layers; i++) {
+            const inset = i * 0.06;
+            addBox(o.minX + inset, o.maxX - inset, y0 + (o.height / layers) * i, y0 + (o.height / layers) * (i + 1),
+                   o.minZ + inset, o.maxZ - inset, i % 2 ? crateMat : timberMat, lists);
+        }
+    } else {
+        // Overturned mine cart on its side.
+        addBox(o.minX, o.maxX, y0 + 0.15, y1, o.minZ, o.maxZ, cartMat, lists);
+        addBox(o.minX + 0.1, o.minX + 0.3, y0, y0 + 0.3, o.minZ - 0.05, o.maxZ + 0.05, darkMat);
+        addBox(o.maxX - 0.3, o.maxX - 0.1, y0, y0 + 0.3, o.minZ - 0.05, o.maxZ + 0.05, darkMat);
+    }
+    tunnelObstacles.push({ minX: o.minX, maxX: o.maxX, minZ: o.minZ, maxZ: o.maxZ });
 }
 
 function buildStairwell(stair) {
@@ -84,24 +178,30 @@ function buildStairwell(stair) {
         addBox(Math.min(xa, xb), Math.max(xa, xb), WALL_BOTTOM_Y, topY, stair.minZ, stair.maxZ, floorMat, [tunnelMeshes]);
     }
 
-    // Side walls run from the gallery floor up to the dugout roof.
+    // Side walls run from the gallery floor up to the dugout roof; the part
+    // above the trench floor is lit like the rest of the surface.
     const zSign = stair.zSign;
-    wallAlongX(stair.innerZ, -zSign, stair.minX, stair.maxX, [], WALL_BOTTOM_Y, BUNKER_ROOF_Y, both);
-    wallAlongX(stair.outerZ,  zSign, stair.minX, stair.maxX, [], WALL_BOTTOM_Y, BUNKER_ROOF_Y, both);
+    [[stair.innerZ, -zSign], [stair.outerZ, zSign]].forEach(([z, outward]) => {
+        wallAlongX(z, outward, stair.minX, stair.maxX, [], WALL_BOTTOM_Y, TRENCH_FLOOR_Y, both);
+        wallAlongX(z, outward, stair.minX, stair.maxX, [], TRENCH_FLOOR_Y, BUNKER_ROOF_Y, both, surfaceEarthMat);
+    });
     // Back wall above the gallery opening.
     const wallMinZ = Math.min(stair.innerZ - zSign * WALL_T, stair.outerZ + zSign * WALL_T);
     const wallMaxZ = Math.max(stair.innerZ - zSign * WALL_T, stair.outerZ + zSign * WALL_T);
     const endX0 = dir > 0 ? stair.bottomX : stair.bottomX - WALL_T;
-    addBox(endX0, endX0 + WALL_T, TUNNEL_CEILING_Y, BUNKER_ROOF_Y, wallMinZ, wallMaxZ, earthMat, both);
+    addBox(endX0, endX0 + WALL_T, TUNNEL_CEILING_Y, TRENCH_FLOOR_Y, wallMinZ, wallMaxZ, earthMat, both);
+    addBox(endX0, endX0 + WALL_T, TRENCH_FLOOR_Y, BUNKER_ROOF_Y, wallMinZ, wallMaxZ, surfaceEarthMat, both);
 
     // Dugout roof, sandbags and entrance lintel.
     const roofMinX = Math.min(stair.topX - dir * 0.3, stair.bottomX + dir * WALL_T);
     const roofMaxX = Math.max(stair.topX - dir * 0.3, stair.bottomX + dir * WALL_T);
-    addBox(roofMinX, roofMaxX, BUNKER_ROOF_Y, BUNKER_ROOF_Y + 0.2, wallMinZ, wallMaxZ, timberMat, [worldMeshes]);
+    addBox(roofMinX, roofMaxX, BUNKER_ROOF_Y, BUNKER_ROOF_Y + 0.2, wallMinZ, wallMaxZ, surfaceTimberMat, [worldMeshes]);
     addBox(roofMinX + 0.3, roofMaxX - 0.3, BUNKER_ROOF_Y + 0.2, BUNKER_ROOF_Y + 0.5,
-           wallMinZ + 0.15, wallMaxZ - 0.15, sandbagMat, [worldMeshes]);
-    addBox(stair.topX - 0.1, stair.topX + 0.1, BUNKER_ROOF_Y - 0.25, BUNKER_ROOF_Y, wallMinZ, wallMaxZ, timberMat);
+           wallMinZ + 0.15, wallMaxZ - 0.15, surfaceSandbagMat, [worldMeshes]);
+    addBox(stair.topX - 0.1, stair.topX + 0.1, BUNKER_ROOF_Y - 0.25, BUNKER_ROOF_Y, wallMinZ, wallMaxZ, surfaceTimberMat);
     addLantern((stair.topX + stair.bottomX) / 2, TRENCH_FLOOR_Y - 0.4, stair.innerZ + zSign * 0.2);
+    // Daylight spilling down the stairs from the entrance.
+    bakeLights.push({ x: stair.topX - dir * 0.5, y: TRENCH_FLOOR_Y + 0.8, z: stair.centerZ, ...DAYLIGHT_LIGHT });
 
     // Surface collision: the dugout walls (the entrance end stays open).
     const wallRects = [
@@ -148,17 +248,13 @@ function buildTunnel(tunnel) {
         addBox(gallery.minX, gallery.maxX, TUNNEL_CEILING_Y - 0.15, TUNNEL_CEILING_Y, z - 0.08, z + 0.08, timberMat);
     }
 
-    // Crates in the chamber give the underground fights some cover.
-    const chamberCenterX = (chamber.minX + chamber.maxX) / 2;
-    [[chamberCenterX - 2.2, -1.6], [chamberCenterX + 2.2, 1.6]].forEach(([x, z]) => {
-        const half = 0.5;
-        addBox(x - half, x + half, TUNNEL_FLOOR_Y, TUNNEL_FLOOR_Y + 0.9, z - half, z + half, timberMat, lists);
-        tunnelObstacles.push({ minX: x - half, maxX: x + half, minZ: z - half, maxZ: z + half });
-    });
+    // Cover for the underground firefights.
+    tunnel.obstacles.forEach(buildObstacle);
 
     addLantern(tunnel.galleryX, TUNNEL_CEILING_Y - 0.35, 0);
     addLantern(tunnel.galleryX, TUNNEL_CEILING_Y - 0.35, allyStair.centerZ + 3);
     addLantern(tunnel.galleryX, TUNNEL_CEILING_Y - 0.35, enemyStair.centerZ - 3);
+    [-11, 11].forEach(z => addLantern(tunnel.galleryX, TUNNEL_CEILING_Y - 0.35, z));
 
     buildStairwell(allyStair);
     buildStairwell(enemyStair);
@@ -257,3 +353,4 @@ export function getOcclusionMeshes(a, b = null) {
 }
 
 TUNNELS.forEach(buildTunnel);
+bakeTunnelLighting();

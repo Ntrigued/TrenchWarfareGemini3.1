@@ -295,7 +295,7 @@ function __require(id) {
 }
 
 __define("js/ai.js", (exports, __require) => {
-const { AI_MOVE_SPEED, AI_DAMAGE_FROM_AI, AI_PEER_SEPARATION, AI_MEMORY_DURATION, AI_SEARCH_DURATION, AI_BLIND_FIRE_CHANCE, AI_COMMAND_PUSH_DURATION, AI_COMMAND_HOLD_DURATION, AI_COMMAND_FLANK_DURATION, AI_SUPPRESSION_DECAY, AI_SUPPRESSION_FROM_HIT, AI_SUPPRESSION_FROM_NEAR, AI_MORALE_RECOVERY, AI_MORALE_HIT_PENALTY, AI_MORALE_CASUALTY_PENALTY, AI_PERCEPTION_INTERVAL, AI_EXPOSURE_CACHE_TTL, AI_TARGET_CANDIDATES, AI_ATTACKER_MEMORY, AI_FRIENDLY_FIRE_CLEARANCE, AI_TUNNEL_MAX_ACTIVE, AI_TUNNEL_SPEED_FACTOR, AI_TUNNEL_CHECK_INTERVAL, AI_TUNNEL_LAUNCH_CHANCE, AI_TUNNEL_ENGAGE_RANGE, TURRET_EXPLOSION_RADIUS } = __require("js/config.js");
+const { AI_MOVE_SPEED, AI_DAMAGE_FROM_AI, AI_PEER_SEPARATION, AI_MEMORY_DURATION, AI_SEARCH_DURATION, AI_BLIND_FIRE_CHANCE, AI_COMMAND_PUSH_DURATION, AI_COMMAND_HOLD_DURATION, AI_COMMAND_FLANK_DURATION, AI_SUPPRESSION_DECAY, AI_SUPPRESSION_FROM_HIT, AI_SUPPRESSION_FROM_NEAR, AI_MORALE_RECOVERY, AI_MORALE_HIT_PENALTY, AI_MORALE_CASUALTY_PENALTY, AI_PERCEPTION_INTERVAL, AI_EXPOSURE_CACHE_TTL, AI_TARGET_CANDIDATES, AI_ATTACKER_MEMORY, AI_FRIENDLY_FIRE_CLEARANCE, AI_TUNNEL_MAX_ACTIVE, AI_TUNNEL_SPEED_FACTOR, AI_TUNNEL_CHECK_INTERVAL, AI_TUNNEL_LAUNCH_CHANCE, AI_TUNNEL_ENGAGE_RANGE, AI_TUNNEL_COVER_RANGE, TURRET_EXPLOSION_RADIUS } = __require("js/config.js");
 
 const { state, allies, enemies } = __require("js/state.js");
 
@@ -504,7 +504,7 @@ function setCommanderPhase(commander, livingCount, mode) {
     // Volunteers sent through the mine tunnels to raid the enemy trench.
     if (livingCount < 6) commander.tunnelQuota = 0;
     else if (mode === 'hold') commander.tunnelQuota = 1;
-    else commander.tunnelQuota = livingCount >= 20 ? 3 : 2;
+    else commander.tunnelQuota = livingCount >= 20 ? 4 : 3;
     commander.tunnelLaunched = 0;
 }
 
@@ -1109,10 +1109,12 @@ class AI {
         // Raiders keep following their tunnel route instead of seeking cover,
         // only stopping to fight enemies close by or met underground.
         if (this.tunnelMission) {
+            const mission = this.tunnelMission;
             const engaged = this.target && !this.target.dead && !this.isRaidDistraction(this.target);
             if (!engaged) {
                 this.target = null;
                 this.isBlindFiring = false;
+                mission.coverPoint = null;
                 if (this.state === 'hidden') {
                     if (this.timer <= 0) this.state = 'tunneling';
                 } else if (this.state !== 'tunneling') {
@@ -1120,8 +1122,18 @@ class AI {
                 }
             } else if (this.state === 'moving') {
                 this.state = 'tunneling';
+            } else if (!mission.coverPoint && this.state !== 'shooting' && this.state !== 'tunneling' &&
+                       nowSeconds() - mission.coverSeekTime > 1.0 && this.seekTunnelCover(this.target)) {
+                // In a firefight out in the open: break for the nearest cover.
             } else if (this.state === 'hidden' && this.timer <= 0) {
-                this.state = this.checkLOS(this.target) ? 'popping' : 'tunneling';
+                if (mission.coverPoint) {
+                    // Fighting from cover: pop up again, or sometimes rush the next cover forward.
+                    const rushChance = 0.3 * this.getNerve();
+                    const rushing = Math.random() < rushChance && this.seekTunnelCover(this.target, true);
+                    this.state = rushing ? 'tunneling' : 'popping';
+                } else {
+                    this.state = this.checkLOS(this.target) ? 'popping' : 'tunneling';
+                }
                 this.timer = 0.2;
             }
         }
@@ -1133,7 +1145,13 @@ class AI {
 
             case 'tunneling': {
                 targetCrouch = 0.55;
+                if (this.tunnelMission.coverPoint) {
+                    this.moveToTunnelCover(dt);
+                    break;
+                }
                 if (this.target && !this.target.dead && this.checkLOS(this.target)) {
+                    // Contact: dash for cover if there is any nearby, else fight where we stand.
+                    if (this.seekTunnelCover(this.target)) break;
                     this.state           = 'aiming';
                     this.timer           = 0.6;
                     this.shootDelay      = 0.15 + Math.random() * 0.2;
@@ -1572,6 +1590,13 @@ class AI {
             this.mesh.position.z = Math.max(minZ, Math.min(maxZ, this.mesh.position.z));
         }
 
+        // Stay tucked in behind tunnel cover while fighting from it
+        const tunnelCover = this.tunnelMission && this.tunnelMission.coverPoint;
+        if (tunnelCover && this.state !== 'tunneling') {
+            this.mesh.position.x += (tunnelCover.x - this.mesh.position.x) * 2 * dt;
+            this.mesh.position.z += (tunnelCover.z - this.mesh.position.z) * 2 * dt;
+        }
+
         // Snap to cover when stationary
         if (this.state !== 'moving' && this.state !== 'using_turret' && !this.tunnelMission &&
             this.targetCover && !this.targetCover.isTurret) {
@@ -1865,6 +1890,9 @@ class AI {
             index: 0,
             bestDist: Infinity,
             stallTimer: 0,
+            coverPoint: null,
+            coverTimer: 0,
+            coverSeekTime: -Infinity,
         };
         this.isAdvancing = true;
         if (this.targetCover && this.targetCover.isTurret && this.targetCover.turret.user === this) {
@@ -1953,6 +1981,65 @@ class AI {
         }
 
         const speed = AI_MOVE_SPEED * AI_TUNNEL_SPEED_FACTOR * (1.0 - (this.suppression * 0.18));
+        const step = Math.min(speed * dt, dist);
+        this.mesh.position.x += (dx / dist) * step;
+        this.mesh.position.z += (dz / dist) * step;
+        const diff = wrapAngle(Math.atan2(dx, dz) - this.mesh.rotation.y);
+        this.mesh.rotation.y += diff * 10 * dt;
+    }
+
+    // Picks tunnel cover near us that puts an obstacle between us and `threat`.
+    // With `advance`, only cover at least 2 m closer to the threat counts.
+    seekTunnelCover(threat, advance = false) {
+        const mission = this.tunnelMission;
+        if (!mission || !this.underground || this.inStairwell || !threat) return false;
+        mission.coverSeekTime = nowSeconds();
+        const myPos = this.mesh.position;
+        const tPos = getEntityPosition(threat);
+        const myThreatDist = Math.abs(tPos.z - myPos.z);
+        const teammates = getTeamMembers(this);
+        let best = null;
+        let bestScore = Infinity;
+
+        for (const point of mission.tunnel.coverPoints) {
+            const dist = Math.hypot(point.x - myPos.x, point.z - myPos.z);
+            if (dist > AI_TUNNEL_COVER_RANGE || point === mission.coverPoint) continue;
+            const threatDist = Math.abs(tPos.z - point.z);
+            // The obstacle must lie between the spot and the threat, not too close to it.
+            if ((point.obstacleZ - point.z) * (tPos.z - point.z) <= 0 || threatDist < 2.5) continue;
+            if (advance && threatDist > myThreatDist - 2) continue;
+            const taken = teammates.some(s => s !== this && !s.dead && s.tunnelMission &&
+                                              s.tunnelMission.coverPoint === point);
+            if (taken) continue;
+            const score = dist + (advance ? threatDist * 0.3 : 0);
+            if (score < bestScore) { bestScore = score; best = point; }
+        }
+
+        if (!best) return false;
+        mission.coverPoint = best;
+        mission.coverTimer = 0;
+        // Time spent fighting shouldn't count as being stuck on the route.
+        mission.bestDist = Infinity;
+        mission.stallTimer = 0;
+        this.state = 'tunneling';
+        return true;
+    }
+
+    moveToTunnelCover(dt) {
+        const mission = this.tunnelMission;
+        const point = mission.coverPoint;
+        const dx = point.x - this.mesh.position.x;
+        const dz = point.z - this.mesh.position.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        mission.coverTimer += dt;
+        if (dist < 0.3 || mission.coverTimer > 4) {
+            if (dist >= 0.3) mission.coverPoint = null;   // couldn't get there
+            this.state = 'hidden';
+            this.timer = 0.3 + Math.random() * 0.4;
+            return;
+        }
+        // Dash between cover, faster than the careful creep along the route.
+        const speed = AI_MOVE_SPEED * 1.1 * (1.0 - (this.suppression * 0.18));
         const step = Math.min(speed * dt, dist);
         this.mesh.position.x += (dx / dist) * step;
         this.mesh.position.z += (dz / dist) * step;
@@ -2613,11 +2700,12 @@ const AI_EXPOSURE_CACHE_TTL     = 0.12; // seconds a line-of-sight result is reu
 const AI_TARGET_CANDIDATES      = 8;    // nearest targets considered for LOS checks
 const AI_ATTACKER_MEMORY        = 3.0;  // seconds a recent attacker gets target priority
 const AI_FRIENDLY_FIRE_CLEARANCE = 0.7; // metres a teammate must be clear of the line of fire
-const AI_TUNNEL_MAX_ACTIVE      = 3;    // raiders per side underground at once
+const AI_TUNNEL_MAX_ACTIVE      = 4;    // raiders per side underground at once
 const AI_TUNNEL_SPEED_FACTOR    = 0.8;  // raiders creep through the galleries
 const AI_TUNNEL_CHECK_INTERVAL  = 1.5;  // seconds between volunteer checks per soldier
-const AI_TUNNEL_LAUNCH_CHANCE   = 0.35; // chance an eligible soldier volunteers per check
+const AI_TUNNEL_LAUNCH_CHANCE   = 0.45; // chance an eligible soldier volunteers per check
 const AI_TUNNEL_ENGAGE_RANGE    = 12;   // metres: raiders on the surface ignore enemies farther than this
+const AI_TUNNEL_COVER_RANGE     = 8;    // metres a raider will dash to reach tunnel cover
 
 exports.FOG_COLOR = FOG_COLOR;
 
@@ -2732,6 +2820,8 @@ exports.AI_TUNNEL_CHECK_INTERVAL = AI_TUNNEL_CHECK_INTERVAL;
 exports.AI_TUNNEL_LAUNCH_CHANCE = AI_TUNNEL_LAUNCH_CHANCE;
 
 exports.AI_TUNNEL_ENGAGE_RANGE = AI_TUNNEL_ENGAGE_RANGE;
+
+exports.AI_TUNNEL_COVER_RANGE = AI_TUNNEL_COVER_RANGE;
 });
 
 __define("js/effects.js", (exports, __require) => {
@@ -4175,7 +4265,7 @@ __define("js/tunnelLayout.js", (exports, __require) => {
 
 const TRENCH_FLOOR_Y   = -1.2;
 const TUNNEL_FLOOR_Y   = -5.4;
-const TUNNEL_CEILING_Y = -3.0;
+const TUNNEL_CEILING_Y = -2.7;
 const TUNNEL_ROOF_Y    = -1.3;   // top of the earth slab above the gallery
 const BUNKER_ROOF_Y    = 1.0;
 
@@ -4185,10 +4275,10 @@ const STAIR_BOTTOM_X  = 34;
 const STAIR_Z_INNER   = 19.8;    // walkway side of the stairwell
 const STAIR_Z_OUTER   = 21.6;    // parapet side of the stairwell
 const GALLERY_X_NEAR  = 34;
-const GALLERY_X_FAR   = 36.4;
-const CHAMBER_X_NEAR  = 31.5;
-const CHAMBER_X_FAR   = 39;
-const CHAMBER_HALF_Z  = 3.5;
+const GALLERY_X_FAR   = 41;
+const CHAMBER_X_NEAR  = 30;
+const CHAMBER_X_FAR   = 45;
+const CHAMBER_HALF_Z  = 6;
 const TRENCH_WALKWAY_Z = 18.8;   // clear lane beside the dugout
 
 function rect(x1, x2, z1, z2) {
@@ -4211,6 +4301,48 @@ function makeStairwell(xSign, zSign) {
     };
 }
 
+// Cover inside each tunnel, for the xSign = +1 tunnel (mirrored for the other).
+// Gallery obstacles hug alternate walls and leave a clear centre lane
+// (x 36.2..38.8) so soldiers can always move along the route.
+// [minX, maxX, minZ, maxZ, height, kind]
+const OBSTACLE_TEMPLATE = [
+    // Gallery, allied half (mirrored in z below)
+    [34.2, 36.0, -16.9, -16.2, 1.2,  'sandbags'],
+    [39.0, 40.5, -14.6, -13.4, 1.05, 'crates'],
+    [34.2, 35.8, -11.6, -10.6, 1.1,  'timber'],
+    [39.0, 40.8,  -8.9,  -8.2, 1.2,  'sandbags'],
+    // Chamber
+    [30.8, 33.4, -3.9, -3.2, 1.2,  'sandbags'],
+    [41.6, 44.2,  3.2,  3.9, 1.2,  'sandbags'],
+    [33.8, 35.0,  0.8,  2.0, 1.05, 'crates'],
+    [40.0, 41.2, -2.0, -0.8, 1.05, 'crates'],
+    [42.6, 44.2, -4.8, -3.8, 1.0,  'cart'],
+    [30.8, 32.4,  3.8,  4.8, 1.0,  'cart'],
+];
+const MIRRORED_IN_Z = 4;   // first N entries are copied to the enemy half
+
+function buildObstacles(xSign) {
+    const rows = [...OBSTACLE_TEMPLATE];
+    for (let i = 0; i < MIRRORED_IN_Z; i++) {
+        const [x0, x1, z0, z1, h, kind] = OBSTACLE_TEMPLATE[i];
+        rows.push([x0, x1, -z1, -z0, h, kind]);
+    }
+    return rows.map(([x0, x1, z0, z1, height, kind]) => ({ ...rect(xSign * x0, xSign * x1, z0, z1), height, kind }));
+}
+
+// Spots on either side of each obstacle along the gallery axis. The
+// obstacle shields a soldier there from enemies further along that axis.
+function buildCoverPoints(obstacles) {
+    return obstacles.flatMap(o => {
+        const x = (o.minX + o.maxX) / 2;
+        const z = (o.minZ + o.maxZ) / 2;
+        return [
+            { x, z: o.minZ - 0.6, obstacleZ: z },
+            { x, z: o.maxZ + 0.6, obstacleZ: z },
+        ];
+    });
+}
+
 const TUNNELS = [-1, 1].map(xSign => {
     const allyStair  = makeStairwell(xSign, -1);
     const enemyStair = makeStairwell(xSign,  1);
@@ -4218,6 +4350,7 @@ const TUNNELS = [-1, 1].map(xSign => {
     const chamber = rect(xSign * CHAMBER_X_NEAR, xSign * CHAMBER_X_FAR, -CHAMBER_HALF_Z, CHAMBER_HALF_Z);
     // Areas an underground soldier can stand in. The stair areas extend into
     // the gallery so the two overlap and movement between them is seamless.
+    const obstacles = buildObstacles(xSign);
     const walkable = [
         rect(xSign * STAIR_TOP_X, xSign * GALLERY_X_FAR, allyStair.innerZ, allyStair.outerZ),
         rect(xSign * STAIR_TOP_X, xSign * GALLERY_X_FAR, enemyStair.innerZ, enemyStair.outerZ),
@@ -4232,6 +4365,8 @@ const TUNNELS = [-1, 1].map(xSign => {
         gallery,
         chamber,
         walkable,
+        obstacles,
+        coverPoints: buildCoverPoints(obstacles),
     };
 });
 
@@ -4306,22 +4441,86 @@ const tunnelObstacles = [];   // props inside the galleries
 const stairObstacles = STAIRWELLS.map(s => ({ minX: s.minX, maxX: s.maxX, minZ: s.minZ, maxZ: s.maxZ }));
 const WALKABLE = TUNNELS.flatMap(t => t.walkable);
 
+// --- Lighting ---
+// Scene lights have no shadows, so surface explosions and battle flashes
+// would light the tunnels through the ground. Underground geometry is
+// therefore unlit and instead carries lantern light baked into its vertex
+// colours once the tunnels are built.
+const bakeQueue = [];
+const bakeLights = [];
+const AMBIENT = [0.34, 0.3, 0.26];
+const LANTERN_LIGHT  = { color: [1.0, 0.72, 0.42], strength: 1.9, range: 14 };
+const DAYLIGHT_LIGHT = { color: [0.75, 0.8, 0.9],  strength: 1.6, range: 8 };
+
+function bakedMaterial(color) {
+    const mat = new THREE.MeshBasicMaterial({ color, vertexColors: true });
+    mat.userData.baked = true;
+    return mat;
+}
+
 // --- Materials ---
-const earthMat   = new THREE.MeshLambertMaterial({ color: 0x2b2218 });
-const floorMat   = new THREE.MeshLambertMaterial({ color: 0x241c14 });
-const timberMat  = new THREE.MeshLambertMaterial({ color: 0x4a3520 });
-const sandbagMat = new THREE.MeshLambertMaterial({ color: 0x6b5f45 });
+const earthMat   = bakedMaterial(0x2b2218);
+const floorMat   = bakedMaterial(0x241c14);
+const timberMat  = bakedMaterial(0x4a3520);
+const sandbagMat = bakedMaterial(0x6b5f45);
+const crateMat   = bakedMaterial(0x5c4326);
+const cartMat    = bakedMaterial(0x3b3b38);
+const darkMat    = bakedMaterial(0x1c1c1a);
 const lanternMat = new THREE.MeshBasicMaterial({ color: 0xffc070 });
+// Above-ground parts of the dugouts use normal scene lighting.
+const surfaceEarthMat   = new THREE.MeshLambertMaterial({ color: 0x4a3c2b });
+const surfaceTimberMat  = new THREE.MeshLambertMaterial({ color: 0x4a3520 });
+const surfaceSandbagMat = new THREE.MeshLambertMaterial({ color: 0x6b5f45 });
 
 const WALL_T = 0.3;
 const WALL_BOTTOM_Y = TUNNEL_FLOOR_Y - 0.2;
 
 function addBox(minX, maxX, minY, maxY, minZ, maxZ, mat, lists = []) {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(maxX - minX, maxY - minY, maxZ - minZ), mat);
+    const w = maxX - minX, h = maxY - minY, d = maxZ - minZ;
+    let geometry;
+    if (mat.userData.baked) {
+        // Subdivide so baked lighting can vary across long walls.
+        const segs = len => Math.max(1, Math.min(48, Math.ceil(len / 1.2)));
+        geometry = new THREE.BoxGeometry(w, h, d, segs(w), segs(h), segs(d));
+    } else {
+        geometry = new THREE.BoxGeometry(w, h, d);
+    }
+    const mesh = new THREE.Mesh(geometry, mat);
     mesh.position.set((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
     scene.add(mesh);
     lists.forEach(list => list.push(mesh));
+    if (mat.userData.baked) bakeQueue.push(mesh);
     return mesh;
+}
+
+// Writes lantern and daylight into the vertex colours of every tunnel mesh.
+function bakeTunnelLighting() {
+    const v = new THREE.Vector3();
+    const n = new THREE.Vector3();
+    bakeQueue.forEach(mesh => {
+        const pos = mesh.geometry.attributes.position;
+        const nor = mesh.geometry.attributes.normal;
+        const colors = new Float32Array(pos.count * 3);
+        for (let i = 0; i < pos.count; i++) {
+            v.fromBufferAttribute(pos, i).add(mesh.position);
+            n.fromBufferAttribute(nor, i);
+            let r = AMBIENT[0], g = AMBIENT[1], b = AMBIENT[2];
+            for (const light of bakeLights) {
+                const dx = light.x - v.x, dy = light.y - v.y, dz = light.z - v.z;
+                const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                if (dist >= light.range) continue;
+                const facing = dist > 0.001 ? Math.max(0, (n.x * dx + n.y * dy + n.z * dz) / dist) : 1;
+                const f = light.strength * Math.pow(1 - dist / light.range, 1.5) * (0.3 + 0.7 * facing);
+                r += light.color[0] * f;
+                g += light.color[1] * f;
+                b += light.color[2] * f;
+            }
+            colors[i * 3] = r;
+            colors[i * 3 + 1] = g;
+            colors[i * 3 + 2] = b;
+        }
+        mesh.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    });
 }
 
 // Splits [from, to] into solid pieces around the given gaps.
@@ -4337,23 +4536,53 @@ function solidSpans(from, to, gaps) {
 }
 
 // Wall running along z at a fixed x; `outward` is the side (+1/-1) it thickens toward.
-function wallAlongZ(x, outward, zFrom, zTo, gaps, minY, maxY, lists) {
+function wallAlongZ(x, outward, zFrom, zTo, gaps, minY, maxY, lists, mat = earthMat) {
     const x0 = outward > 0 ? x : x - WALL_T;
     solidSpans(zFrom, zTo, gaps).forEach(([z0, z1]) =>
-        addBox(x0, x0 + WALL_T, minY, maxY, z0, z1, earthMat, lists));
+        addBox(x0, x0 + WALL_T, minY, maxY, z0, z1, mat, lists));
 }
 
-function wallAlongX(z, outward, xFrom, xTo, gaps, minY, maxY, lists) {
+function wallAlongX(z, outward, xFrom, xTo, gaps, minY, maxY, lists, mat = earthMat) {
     const z0 = outward > 0 ? z : z - WALL_T;
     solidSpans(xFrom, xTo, gaps).forEach(([x0, x1]) =>
-        addBox(x0, x1, minY, maxY, z0, z0 + WALL_T, earthMat, lists));
+        addBox(x0, x1, minY, maxY, z0, z0 + WALL_T, mat, lists));
 }
 
 function addLantern(x, y, z) {
     addBox(x - 0.08, x + 0.08, y - 0.12, y + 0.12, z - 0.08, z + 0.08, lanternMat);
-    const light = new THREE.PointLight(0xffb060, 1.4, 13, 1.5);
-    light.position.set(x, y, z);
-    scene.add(light);
+    bakeLights.push({ x, y, z, ...LANTERN_LIGHT });
+}
+
+// Builds one piece of tunnel cover; it blocks movement, sight and bullets.
+function buildObstacle(o) {
+    const lists = [tunnelMeshes];
+    const y0 = TUNNEL_FLOOR_Y;
+    const y1 = TUNNEL_FLOOR_Y + o.height;
+    const w = o.maxX - o.minX;
+    if (o.kind === 'sandbags') {
+        // Two courses of bags, the top one slightly narrower.
+        addBox(o.minX, o.maxX, y0, y0 + o.height * 0.55, o.minZ, o.maxZ, sandbagMat, lists);
+        addBox(o.minX + 0.08, o.maxX - 0.08, y0 + o.height * 0.55, y1, o.minZ + 0.05, o.maxZ - 0.05, sandbagMat, lists);
+    } else if (o.kind === 'crates') {
+        // A stack of two crates beside a taller one.
+        const split = o.minX + w * 0.55;
+        addBox(o.minX, split, y0, y1, o.minZ, o.maxZ, timberMat, lists);
+        addBox(split + 0.04, o.maxX, y0, y0 + o.height * 0.7, o.minZ + 0.1, o.maxZ - 0.1, crateMat, lists);
+    } else if (o.kind === 'timber') {
+        // Pile of spare shoring beams.
+        const layers = 4;
+        for (let i = 0; i < layers; i++) {
+            const inset = i * 0.06;
+            addBox(o.minX + inset, o.maxX - inset, y0 + (o.height / layers) * i, y0 + (o.height / layers) * (i + 1),
+                   o.minZ + inset, o.maxZ - inset, i % 2 ? crateMat : timberMat, lists);
+        }
+    } else {
+        // Overturned mine cart on its side.
+        addBox(o.minX, o.maxX, y0 + 0.15, y1, o.minZ, o.maxZ, cartMat, lists);
+        addBox(o.minX + 0.1, o.minX + 0.3, y0, y0 + 0.3, o.minZ - 0.05, o.maxZ + 0.05, darkMat);
+        addBox(o.maxX - 0.3, o.maxX - 0.1, y0, y0 + 0.3, o.minZ - 0.05, o.maxZ + 0.05, darkMat);
+    }
+    tunnelObstacles.push({ minX: o.minX, maxX: o.maxX, minZ: o.minZ, maxZ: o.maxZ });
 }
 
 function buildStairwell(stair) {
@@ -4370,24 +4599,30 @@ function buildStairwell(stair) {
         addBox(Math.min(xa, xb), Math.max(xa, xb), WALL_BOTTOM_Y, topY, stair.minZ, stair.maxZ, floorMat, [tunnelMeshes]);
     }
 
-    // Side walls run from the gallery floor up to the dugout roof.
+    // Side walls run from the gallery floor up to the dugout roof; the part
+    // above the trench floor is lit like the rest of the surface.
     const zSign = stair.zSign;
-    wallAlongX(stair.innerZ, -zSign, stair.minX, stair.maxX, [], WALL_BOTTOM_Y, BUNKER_ROOF_Y, both);
-    wallAlongX(stair.outerZ,  zSign, stair.minX, stair.maxX, [], WALL_BOTTOM_Y, BUNKER_ROOF_Y, both);
+    [[stair.innerZ, -zSign], [stair.outerZ, zSign]].forEach(([z, outward]) => {
+        wallAlongX(z, outward, stair.minX, stair.maxX, [], WALL_BOTTOM_Y, TRENCH_FLOOR_Y, both);
+        wallAlongX(z, outward, stair.minX, stair.maxX, [], TRENCH_FLOOR_Y, BUNKER_ROOF_Y, both, surfaceEarthMat);
+    });
     // Back wall above the gallery opening.
     const wallMinZ = Math.min(stair.innerZ - zSign * WALL_T, stair.outerZ + zSign * WALL_T);
     const wallMaxZ = Math.max(stair.innerZ - zSign * WALL_T, stair.outerZ + zSign * WALL_T);
     const endX0 = dir > 0 ? stair.bottomX : stair.bottomX - WALL_T;
-    addBox(endX0, endX0 + WALL_T, TUNNEL_CEILING_Y, BUNKER_ROOF_Y, wallMinZ, wallMaxZ, earthMat, both);
+    addBox(endX0, endX0 + WALL_T, TUNNEL_CEILING_Y, TRENCH_FLOOR_Y, wallMinZ, wallMaxZ, earthMat, both);
+    addBox(endX0, endX0 + WALL_T, TRENCH_FLOOR_Y, BUNKER_ROOF_Y, wallMinZ, wallMaxZ, surfaceEarthMat, both);
 
     // Dugout roof, sandbags and entrance lintel.
     const roofMinX = Math.min(stair.topX - dir * 0.3, stair.bottomX + dir * WALL_T);
     const roofMaxX = Math.max(stair.topX - dir * 0.3, stair.bottomX + dir * WALL_T);
-    addBox(roofMinX, roofMaxX, BUNKER_ROOF_Y, BUNKER_ROOF_Y + 0.2, wallMinZ, wallMaxZ, timberMat, [worldMeshes]);
+    addBox(roofMinX, roofMaxX, BUNKER_ROOF_Y, BUNKER_ROOF_Y + 0.2, wallMinZ, wallMaxZ, surfaceTimberMat, [worldMeshes]);
     addBox(roofMinX + 0.3, roofMaxX - 0.3, BUNKER_ROOF_Y + 0.2, BUNKER_ROOF_Y + 0.5,
-           wallMinZ + 0.15, wallMaxZ - 0.15, sandbagMat, [worldMeshes]);
-    addBox(stair.topX - 0.1, stair.topX + 0.1, BUNKER_ROOF_Y - 0.25, BUNKER_ROOF_Y, wallMinZ, wallMaxZ, timberMat);
+           wallMinZ + 0.15, wallMaxZ - 0.15, surfaceSandbagMat, [worldMeshes]);
+    addBox(stair.topX - 0.1, stair.topX + 0.1, BUNKER_ROOF_Y - 0.25, BUNKER_ROOF_Y, wallMinZ, wallMaxZ, surfaceTimberMat);
     addLantern((stair.topX + stair.bottomX) / 2, TRENCH_FLOOR_Y - 0.4, stair.innerZ + zSign * 0.2);
+    // Daylight spilling down the stairs from the entrance.
+    bakeLights.push({ x: stair.topX - dir * 0.5, y: TRENCH_FLOOR_Y + 0.8, z: stair.centerZ, ...DAYLIGHT_LIGHT });
 
     // Surface collision: the dugout walls (the entrance end stays open).
     const wallRects = [
@@ -4434,17 +4669,13 @@ function buildTunnel(tunnel) {
         addBox(gallery.minX, gallery.maxX, TUNNEL_CEILING_Y - 0.15, TUNNEL_CEILING_Y, z - 0.08, z + 0.08, timberMat);
     }
 
-    // Crates in the chamber give the underground fights some cover.
-    const chamberCenterX = (chamber.minX + chamber.maxX) / 2;
-    [[chamberCenterX - 2.2, -1.6], [chamberCenterX + 2.2, 1.6]].forEach(([x, z]) => {
-        const half = 0.5;
-        addBox(x - half, x + half, TUNNEL_FLOOR_Y, TUNNEL_FLOOR_Y + 0.9, z - half, z + half, timberMat, lists);
-        tunnelObstacles.push({ minX: x - half, maxX: x + half, minZ: z - half, maxZ: z + half });
-    });
+    // Cover for the underground firefights.
+    tunnel.obstacles.forEach(buildObstacle);
 
     addLantern(tunnel.galleryX, TUNNEL_CEILING_Y - 0.35, 0);
     addLantern(tunnel.galleryX, TUNNEL_CEILING_Y - 0.35, allyStair.centerZ + 3);
     addLantern(tunnel.galleryX, TUNNEL_CEILING_Y - 0.35, enemyStair.centerZ - 3);
+    [-11, 11].forEach(z => addLantern(tunnel.galleryX, TUNNEL_CEILING_Y - 0.35, z));
 
     buildStairwell(allyStair);
     buildStairwell(enemyStair);
@@ -4543,6 +4774,7 @@ function getOcclusionMeshes(a, b = null) {
 }
 
 TUNNELS.forEach(buildTunnel);
+bakeTunnelLighting();
 
 exports.tunnelMeshes = tunnelMeshes;
 

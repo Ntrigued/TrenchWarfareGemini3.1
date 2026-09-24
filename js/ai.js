@@ -9,7 +9,7 @@ import { AI_MOVE_SPEED, AI_DAMAGE_FROM_AI, AI_PEER_SEPARATION,
          AI_MORALE_RECOVERY, AI_MORALE_HIT_PENALTY, AI_MORALE_CASUALTY_PENALTY,
          AI_PERCEPTION_INTERVAL, AI_EXPOSURE_CACHE_TTL, AI_TARGET_CANDIDATES,
          AI_ATTACKER_MEMORY, AI_FRIENDLY_FIRE_CLEARANCE,
-         AI_TUNNEL_MAX_ACTIVE, AI_TUNNEL_SPEED_FACTOR, AI_TUNNEL_CHECK_INTERVAL, AI_TUNNEL_LAUNCH_CHANCE, AI_TUNNEL_ENGAGE_RANGE,
+         AI_TUNNEL_MAX_ACTIVE, AI_TUNNEL_SPEED_FACTOR, AI_TUNNEL_CHECK_INTERVAL, AI_TUNNEL_LAUNCH_CHANCE, AI_TUNNEL_ENGAGE_RANGE, AI_TUNNEL_COVER_RANGE,
          TURRET_EXPLOSION_RADIUS } from './config.js';
 import { state, allies, enemies } from './state.js';
 import { scene, camera } from './scene.js';
@@ -196,7 +196,7 @@ function setCommanderPhase(commander, livingCount, mode) {
     // Volunteers sent through the mine tunnels to raid the enemy trench.
     if (livingCount < 6) commander.tunnelQuota = 0;
     else if (mode === 'hold') commander.tunnelQuota = 1;
-    else commander.tunnelQuota = livingCount >= 20 ? 3 : 2;
+    else commander.tunnelQuota = livingCount >= 20 ? 4 : 3;
     commander.tunnelLaunched = 0;
 }
 
@@ -801,10 +801,12 @@ export class AI {
         // Raiders keep following their tunnel route instead of seeking cover,
         // only stopping to fight enemies close by or met underground.
         if (this.tunnelMission) {
+            const mission = this.tunnelMission;
             const engaged = this.target && !this.target.dead && !this.isRaidDistraction(this.target);
             if (!engaged) {
                 this.target = null;
                 this.isBlindFiring = false;
+                mission.coverPoint = null;
                 if (this.state === 'hidden') {
                     if (this.timer <= 0) this.state = 'tunneling';
                 } else if (this.state !== 'tunneling') {
@@ -812,8 +814,18 @@ export class AI {
                 }
             } else if (this.state === 'moving') {
                 this.state = 'tunneling';
+            } else if (!mission.coverPoint && this.state !== 'shooting' && this.state !== 'tunneling' &&
+                       nowSeconds() - mission.coverSeekTime > 1.0 && this.seekTunnelCover(this.target)) {
+                // In a firefight out in the open: break for the nearest cover.
             } else if (this.state === 'hidden' && this.timer <= 0) {
-                this.state = this.checkLOS(this.target) ? 'popping' : 'tunneling';
+                if (mission.coverPoint) {
+                    // Fighting from cover: pop up again, or sometimes rush the next cover forward.
+                    const rushChance = 0.3 * this.getNerve();
+                    const rushing = Math.random() < rushChance && this.seekTunnelCover(this.target, true);
+                    this.state = rushing ? 'tunneling' : 'popping';
+                } else {
+                    this.state = this.checkLOS(this.target) ? 'popping' : 'tunneling';
+                }
                 this.timer = 0.2;
             }
         }
@@ -825,7 +837,13 @@ export class AI {
 
             case 'tunneling': {
                 targetCrouch = 0.55;
+                if (this.tunnelMission.coverPoint) {
+                    this.moveToTunnelCover(dt);
+                    break;
+                }
                 if (this.target && !this.target.dead && this.checkLOS(this.target)) {
+                    // Contact: dash for cover if there is any nearby, else fight where we stand.
+                    if (this.seekTunnelCover(this.target)) break;
                     this.state           = 'aiming';
                     this.timer           = 0.6;
                     this.shootDelay      = 0.15 + Math.random() * 0.2;
@@ -1264,6 +1282,13 @@ export class AI {
             this.mesh.position.z = Math.max(minZ, Math.min(maxZ, this.mesh.position.z));
         }
 
+        // Stay tucked in behind tunnel cover while fighting from it
+        const tunnelCover = this.tunnelMission && this.tunnelMission.coverPoint;
+        if (tunnelCover && this.state !== 'tunneling') {
+            this.mesh.position.x += (tunnelCover.x - this.mesh.position.x) * 2 * dt;
+            this.mesh.position.z += (tunnelCover.z - this.mesh.position.z) * 2 * dt;
+        }
+
         // Snap to cover when stationary
         if (this.state !== 'moving' && this.state !== 'using_turret' && !this.tunnelMission &&
             this.targetCover && !this.targetCover.isTurret) {
@@ -1557,6 +1582,9 @@ export class AI {
             index: 0,
             bestDist: Infinity,
             stallTimer: 0,
+            coverPoint: null,
+            coverTimer: 0,
+            coverSeekTime: -Infinity,
         };
         this.isAdvancing = true;
         if (this.targetCover && this.targetCover.isTurret && this.targetCover.turret.user === this) {
@@ -1645,6 +1673,65 @@ export class AI {
         }
 
         const speed = AI_MOVE_SPEED * AI_TUNNEL_SPEED_FACTOR * (1.0 - (this.suppression * 0.18));
+        const step = Math.min(speed * dt, dist);
+        this.mesh.position.x += (dx / dist) * step;
+        this.mesh.position.z += (dz / dist) * step;
+        const diff = wrapAngle(Math.atan2(dx, dz) - this.mesh.rotation.y);
+        this.mesh.rotation.y += diff * 10 * dt;
+    }
+
+    // Picks tunnel cover near us that puts an obstacle between us and `threat`.
+    // With `advance`, only cover at least 2 m closer to the threat counts.
+    seekTunnelCover(threat, advance = false) {
+        const mission = this.tunnelMission;
+        if (!mission || !this.underground || this.inStairwell || !threat) return false;
+        mission.coverSeekTime = nowSeconds();
+        const myPos = this.mesh.position;
+        const tPos = getEntityPosition(threat);
+        const myThreatDist = Math.abs(tPos.z - myPos.z);
+        const teammates = getTeamMembers(this);
+        let best = null;
+        let bestScore = Infinity;
+
+        for (const point of mission.tunnel.coverPoints) {
+            const dist = Math.hypot(point.x - myPos.x, point.z - myPos.z);
+            if (dist > AI_TUNNEL_COVER_RANGE || point === mission.coverPoint) continue;
+            const threatDist = Math.abs(tPos.z - point.z);
+            // The obstacle must lie between the spot and the threat, not too close to it.
+            if ((point.obstacleZ - point.z) * (tPos.z - point.z) <= 0 || threatDist < 2.5) continue;
+            if (advance && threatDist > myThreatDist - 2) continue;
+            const taken = teammates.some(s => s !== this && !s.dead && s.tunnelMission &&
+                                              s.tunnelMission.coverPoint === point);
+            if (taken) continue;
+            const score = dist + (advance ? threatDist * 0.3 : 0);
+            if (score < bestScore) { bestScore = score; best = point; }
+        }
+
+        if (!best) return false;
+        mission.coverPoint = best;
+        mission.coverTimer = 0;
+        // Time spent fighting shouldn't count as being stuck on the route.
+        mission.bestDist = Infinity;
+        mission.stallTimer = 0;
+        this.state = 'tunneling';
+        return true;
+    }
+
+    moveToTunnelCover(dt) {
+        const mission = this.tunnelMission;
+        const point = mission.coverPoint;
+        const dx = point.x - this.mesh.position.x;
+        const dz = point.z - this.mesh.position.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        mission.coverTimer += dt;
+        if (dist < 0.3 || mission.coverTimer > 4) {
+            if (dist >= 0.3) mission.coverPoint = null;   // couldn't get there
+            this.state = 'hidden';
+            this.timer = 0.3 + Math.random() * 0.4;
+            return;
+        }
+        // Dash between cover, faster than the careful creep along the route.
+        const speed = AI_MOVE_SPEED * 1.1 * (1.0 - (this.suppression * 0.18));
         const step = Math.min(speed * dt, dist);
         this.mesh.position.x += (dx / dist) * step;
         this.mesh.position.z += (dz / dist) * step;
