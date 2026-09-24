@@ -29,6 +29,8 @@ export const state = {
     yaw: 0,
     pitch: 0,
     playerHp: PLAYER_HP_MAX,
+    playerUnderground: false,
+    playerInStairwell: false,
     initialized: false,
 
     // --- Weapons ---
@@ -59,6 +61,8 @@ export const state = {
             roleCounts: { hold: 0, suppress: 0, flank: 0, push: 0 },
             rolePriority: ['hold', 'suppress', 'flank', 'push'],
             defaultRole: 'hold',
+            tunnelQuota: 0,
+            tunnelLaunched: 0,
         },
         enemy: {
             mode: 'hold',
@@ -70,6 +74,8 @@ export const state = {
             roleCounts: { hold: 0, suppress: 0, flank: 0, push: 0 },
             rolePriority: ['hold', 'suppress', 'flank', 'push'],
             defaultRole: 'hold',
+            tunnelQuota: 0,
+            tunnelLaunched: 0,
         }
     },
 

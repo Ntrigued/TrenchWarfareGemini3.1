@@ -6,7 +6,7 @@ import { MG_HEAT_PER_SHOT, MG_OVERHEAT_CAP } from './config.js';
 import { state, allies, enemies } from './state.js';
 import { camera } from './scene.js';
 import { playSoundFile, playPositionalSound } from './audio.js';
-import { worldMeshes } from './world.js';
+import { getOcclusionMeshes, canPerceive } from './tunnels.js';
 import { playerAI } from './player.js';
 import { weaponsData, weaponContainer, fpFlashMaterial, fpFlashLight, fpFlashGroup } from './weapons.js';
 import { raycaster } from './raycast.js';
@@ -66,8 +66,10 @@ export function shootPlayer() {
     raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
     if (wep.type === 'auto') raycaster.set(camera.getWorldPosition(new THREE.Vector3()), camDir);
 
-    const allAIMeshes = [...enemies.map(e => e.mesh), ...allies.map(a => a.mesh)];
-    const intersects  = raycaster.intersectObjects([...worldMeshes, ...allAIMeshes], true);
+    const allAIMeshes = [...enemies, ...allies]
+        .filter(s => s.mesh.visible && canPerceive(playerAI, s))
+        .map(s => s.mesh);
+    const intersects  = raycaster.intersectObjects([...getOcclusionMeshes(playerAI), ...allAIMeshes], true);
 
     let hitDistance = 200;
     if (intersects.length > 0) {
@@ -107,7 +109,7 @@ export function shootPlayer() {
     const bulletRay  = new THREE.Ray(barrelPos, camDir);
     let closestPt    = new THREE.Vector3();
     [...enemies, ...allies].forEach(e => {
-        if (!e.dead) {
+        if (!e.dead && canPerceive(playerAI, e)) {
             const ePos = e.mesh.position.clone().add(new THREE.Vector3(0, 1.0, 0));
             bulletRay.closestPointToPoint(ePos, closestPt);
             if (barrelPos.distanceTo(closestPt) < hitDistance + 1.0) {

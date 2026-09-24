@@ -7,6 +7,7 @@ import { turrets } from './state.js';
 import { wallMat, worldMeshes, collisionObstacles, allyCoversBack, enemyCoversBack,
          allyCoversFront, enemyCoversFront, createWall, addCover,
          blockCenters, blockWidths } from './world.js';
+import { isNearTunnelEntrance } from './tunnelLayout.js';
 
 export class Turret {
     constructor(x, y, z, isEnemy) {
@@ -209,6 +210,7 @@ buildElevatedWallAndCovers( 26.25, true);
 for (let x = -96; x <= 96; x += 4 + Math.random() * 3) {
     if (Math.abs(x + 60) < 5 || Math.abs(x + 20) < 5 || Math.abs(x - 20) < 5 || Math.abs(x - 60) < 5) continue;
     if (Math.abs(x + 40) < 4 || Math.abs(x - 40) < 4) continue;
+    if (isNearTunnelEntrance(x)) continue;
     let oxA = x + (Math.random() - 0.5) * 2;
     addCover(oxA, -18.5 + (Math.random() - 0.5), allyCoversFront, -1.2);
     let oxE = x + (Math.random() - 0.5) * 2;

@@ -8,6 +8,8 @@ import { state, allies, enemies } from './state.js';
 import { camera } from './scene.js';
 import { playPositionalSound, playNearMissSound, triggerShellShock } from './audio.js';
 import { worldMeshes } from './world.js';
+import { isUnderground, isInStairwell, canPerceive } from './tunnels.js';
+import { TRENCH_FLOOR_Y } from './tunnelLayout.js';
 import { playerRoot, playerAI } from './player.js';
 import { raycaster } from './raycast.js';
 import { showMuzzleFlash, createExplosion, createImpact, createTracer } from './effects.js';
@@ -68,10 +70,11 @@ export function shootTurret(turret, shooter) {
             state.currentScreenShake = Math.max(state.currentScreenShake, shakeAmt * 0.6);
         }
 
-        // AoE damage
+        // AoE damage (earth absorbs the blast between the surface and tunnels)
+        const blastUnderground = hit.point.y < TRENCH_FLOOR_Y - 0.5;
         const hitPool = [...allies, ...enemies, playerAI];
         hitPool.forEach(t => {
-            if (!t.dead) {
+            if (!t.dead && (isUnderground(t) === blastUnderground || isInStairwell(t))) {
                 const posOffset = t.isPlayer
                     ? ((state.isProne || state.slideTimer > 0) ? 0.15 : (state.isCrouched ? 0.4 : 1.0))
                     : (1.0 - (t.crouchT * 0.45));
@@ -109,7 +112,7 @@ export function shootTurret(turret, shooter) {
     const hitPool   = [...allies, ...enemies, playerAI];
     let closestPt   = new THREE.Vector3();
     hitPool.forEach(t => {
-        if (!t.dead) {
+        if (!t.dead && (!shooter || canPerceive(shooter, t))) {
             const posOffset = t.isPlayer
                 ? ((state.isProne || state.slideTimer > 0) ? 0.15 : (state.isCrouched ? 0.4 : 1.0))
                 : (1.0 - (t.crouchT * 0.45));

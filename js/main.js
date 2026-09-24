@@ -11,7 +11,7 @@ import { PLAYER_RADIUS, PLAYER_HP_MAX, EYE_HEIGHT_STAND, EYE_HEIGHT_CROUCH, EYE_
 import { state, allies, enemies, turrets } from './state.js';
 import { scene, camera, renderer } from './scene.js';
 import { initAudio, startAmbientBattle, playSoundFile, getAudioState } from './audio.js';
-import { getTerrainHeight, resolveObstacles } from './world.js';
+import { getTerrainHeight } from './world.js';
 import './turrets.js';  // side-effect: builds turrets and covers
 import { flashes, explosions, impacts, tracers, ashParticles, ashCount, horizonLights } from './effects.js';
 import { playerRoot, leanObject, pitchObject, playerAI } from './player.js';
@@ -20,6 +20,7 @@ import './input.js';  // side-effect: registers event handlers
 import { shootPlayer } from './playerShooting.js';
 import { shootTurret } from './turretShooting.js';
 import { AI, spawnSoldiers, updateTeamCommanders } from './ai.js';
+import { resolveMovement, updateLayer, getGroundHeight, isUnderground } from './tunnels.js';
 
 // ================================================================
 // GAME MANAGEMENT
@@ -46,7 +47,9 @@ function startGame(mode) {
     const spawnX = (Math.random() - 0.5) * 132;
     let spawnZ   = Math.random() > 0.5 ? (-21 + Math.random() * 3) : (-34 + Math.random() * 6);
     let spawnPos2D = { x: spawnX, z: spawnZ };
-    resolveObstacles(spawnPos2D, 0.4);
+    resolveMovement(spawnPos2D, 0.4, false, false);
+    state.playerUnderground = false;
+    state.playerInStairwell = false;
     playerRoot.position.set(spawnPos2D.x, getTerrainHeight(spawnPos2D.x, spawnPos2D.z), spawnPos2D.z);
 
     // Reset player controls
@@ -337,7 +340,7 @@ function animate() {
             let leanLocalVec = new THREE.Vector3(leanObject.userData.baseLocalX, 0, 0);
             leanLocalVec.applyAxisAngle(new THREE.Vector3(0, 1, 0), state.yaw);
             let leanPos2D = { x: playerRoot.position.x + leanLocalVec.x, z: playerRoot.position.z + leanLocalVec.z };
-            resolveObstacles(leanPos2D, 0.3);
+            resolveMovement(leanPos2D, 0.3, state.playerUnderground, true);
             let resolvedLocalVec = new THREE.Vector3(leanPos2D.x - playerRoot.position.x, 0, leanPos2D.z - playerRoot.position.z);
             resolvedLocalVec.applyAxisAngle(new THREE.Vector3(0, 1, 0), -state.yaw);
             leanObject.position.x = resolvedLocalVec.x;
@@ -419,12 +422,12 @@ function animate() {
             if (nextPos.x >  95 - pr)   nextPos.x =  95 - pr;
 
             let pPos2D = { x: nextPos.x, z: nextPos.z };
-            resolveObstacles(pPos2D, pr);
+            resolveMovement(pPos2D, pr, state.playerUnderground, true);
             nextPos.x = pPos2D.x;
             nextPos.z = pPos2D.z;
 
-            // Player-AI crowd separation
-            const allLivingAI = [...allies, ...enemies].filter(a => !a.dead);
+            // Player-AI crowd separation (only against soldiers on the same level)
+            const allLivingAI = [...allies, ...enemies].filter(a => !a.dead && isUnderground(a) === state.playerUnderground);
             allLivingAI.forEach(ai => {
                 let dx = nextPos.x - ai.mesh.position.x;
                 let dz = nextPos.z - ai.mesh.position.z;
@@ -439,7 +442,10 @@ function animate() {
             });
 
             playerRoot.position.copy(nextPos);
-            playerRoot.position.y = getTerrainHeight(playerRoot.position.x, playerRoot.position.z);
+            const layer = updateLayer(nextPos.x, nextPos.z, state.playerUnderground);
+            state.playerUnderground = layer.underground;
+            state.playerInStairwell = layer.inStairwell;
+            playerRoot.position.y = getGroundHeight(playerRoot.position.x, playerRoot.position.z, state.playerUnderground);
 
         } else {
             // Turret mount
