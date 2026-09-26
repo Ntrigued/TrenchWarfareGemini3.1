@@ -4,8 +4,27 @@
 
 import { camera } from './scene.js';
 import { worldMeshes } from './world.js';
+import { getBulletMeshes } from './tunnels.js';
+import { createTracer } from './effects.js';
 
 export const raycaster = new THREE.Raycaster();
+const bulletRaycaster  = new THREE.Raycaster();
+
+// Distance a round travels from `origin` along `dir` before striking any
+// solid surface on either layer, capped at `maxDist`.
+function getBulletTravel(origin, dir, maxDist) {
+    bulletRaycaster.set(origin, dir);
+    bulletRaycaster.far = maxDist;
+    const hits = bulletRaycaster.intersectObjects(getBulletMeshes(), false);
+    return hits.length > 0 ? hits[0].distance : maxDist;
+}
+
+// Ricochet streak leaving a surface at `point`; it stops at the next wall,
+// floor or ceiling instead of flying on through the ground.
+export function createRicochet(point, normal, dir, maxDist = 60) {
+    const start = point.clone().add(normal.clone().multiplyScalar(0.03));
+    createTracer(start, dir, getBulletTravel(start, dir, maxDist));
+}
 
 // Returns true if a world-space spot is visible from the player's camera
 export function isSpotVisibleToPlayer(spot) {

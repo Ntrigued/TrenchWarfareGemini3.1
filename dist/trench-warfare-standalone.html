@@ -307,15 +307,15 @@ const { getTerrainHeight, allyCoversFront, allyCoversBack, enemyCoversFront, ene
 
 const { playerRoot, playerAI } = __require("js/player.js");
 
-const { raycaster } = __require("js/raycast.js");
+const { raycaster, createRicochet } = __require("js/raycast.js");
 
 const { isSpotVisibleToPlayer } = __require("js/raycast.js");
 
-const { showMuzzleFlash, createImpact, createTracer } = __require("js/effects.js");
+const { showMuzzleFlash, createImpact, createTracerTo } = __require("js/effects.js");
 
 const { shootTurret } = __require("js/turretShooting.js");
 
-const { resolveMovement, updateLayer, getGroundHeight, canPerceive, getOcclusionMeshes } = __require("js/tunnels.js");
+const { resolveMovement, updateLayer, getGroundHeight, canPerceive, getOcclusionMeshes, getBulletMeshes } = __require("js/tunnels.js");
 
 const { TUNNELS, STAIR_TOP_X, STAIR_BOTTOM_X, CHAMBER_HALF_Z, TRENCH_WALKWAY_Z } = __require("js/tunnelLayout.js");
 
@@ -2402,7 +2402,7 @@ class AI {
         for (const soldier of [...allies, ...enemies]) {
             if (soldier !== this && soldier.mesh.visible && canPerceive(this, soldier)) hitTargets.push(soldier.mesh);
         }
-        const intersects = raycaster.intersectObjects([...getOcclusionMeshes(this), ...hitTargets], true);
+        const intersects = raycaster.intersectObjects([...getBulletMeshes(), ...hitTargets], true);
 
         let hitDistance = 200;
         if (intersects.length > 0) {
@@ -2427,7 +2427,7 @@ class AI {
                     reflection.y += Math.random() * 0.4;
                     reflection.z += (Math.random() - 0.5) * 0.3;
                     reflection.normalize();
-                    createTracer(hit.point, reflection, 60);
+                    createRicochet(hit.point, normal, reflection);
                     if (camera.getWorldPosition(new THREE.Vector3()).distanceToSquared(hit.point) < 64.0) {
                         playSoundFile('whiz', 1.5 + Math.random() * 0.5, 0.2);
                     }
@@ -2435,7 +2435,8 @@ class AI {
             }
         }
 
-        if (Math.random() < 0.25) createTracer(visualStart, dir, hitDistance);
+        // The round flies from the eye; draw its tracer from the muzzle to where it landed.
+        if (Math.random() < 0.25) createTracerTo(visualStart, eyeStart.clone().addScaledVector(dir, hitDistance));
 
         const bulletRay = new THREE.Ray(eyeStart, dir);
         const hitPool   = [...allies, ...enemies, playerAI];
@@ -2872,9 +2873,12 @@ exports.AI_TUNNEL_REAR_SIGHT = AI_TUNNEL_REAR_SIGHT;
 __define("js/effects.js", (exports, __require) => {
 const { scene } = __require("js/scene.js");
 
+const { TUNNEL_ROOF_Y } = __require("js/tunnelLayout.js");
+
 // ================================================================
 // VISUAL EFFECTS POOLS & ATMOSPHERIC VISUALS
 // ================================================================
+
 
 const flashTexCanvas  = document.createElement('canvas');
 flashTexCanvas.width  = 16;
@@ -2921,28 +2925,41 @@ function showMuzzleFlash(pos, dir) {
 }
 
 // --- Explosion pool ---
+// The fireball grows to ~10 m across, far larger than the earth between the
+// surface and the tunnels, so each one is clipped to its own layer at the
+// top of the tunnel roof slab.
+const SURFACE_CLIP     = new THREE.Plane(new THREE.Vector3(0,  1, 0), -TUNNEL_ROOF_Y);  // keeps y >= roof
+const UNDERGROUND_CLIP = new THREE.Plane(new THREE.Vector3(0, -1, 0),  TUNNEL_ROOF_Y);  // keeps y <= roof
 const explosions = [];
 const expGeo     = new THREE.SphereGeometry(1, 16, 16);
 const expMat     = new THREE.MeshBasicMaterial({ color: 0xffaa00, transparent: true, opacity: 1, depthWrite: false, blending: THREE.AdditiveBlending });
 for (let i = 0; i < 15; i++) {
-    const m = new THREE.Mesh(expGeo, expMat.clone());
+    const mat = expMat.clone();
+    mat.clippingPlanes = [SURFACE_CLIP];
+    const m = new THREE.Mesh(expGeo, mat);
     m.visible = false;
     const l = new THREE.PointLight(0xff6600, 0, 40);
     scene.add(m);
     scene.add(l);
-    explosions.push({ mesh: m, light: l, life: 0, maxLife: 0.5 });
+    explosions.push({ mesh: m, light: l, life: 0, maxLife: 0.5, underground: false });
 }
 
-function createExplosion(pos) {
+function createExplosion(pos, underground = false) {
     const exp = explosions.find(e => e.life <= 0);
     if (exp) {
         exp.life = exp.maxLife;
+        exp.underground = underground;
+        // Same plane count as before, so swapping it needs no shader rebuild.
+        exp.mesh.material.clippingPlanes[0] = underground ? UNDERGROUND_CLIP : SURFACE_CLIP;
         exp.mesh.position.copy(pos);
         exp.light.position.copy(pos);
         exp.visible = true;
         exp.mesh.visible = true;
+        exp.mesh.scale.setScalar(0.5);
+        exp.mesh.material.color.setHex(0xffffff);
         exp.mesh.material.opacity = 1;
-        exp.light.intensity = 20.0;
+        // Lit by the explosion update, which knows which layer the player sees.
+        exp.light.intensity = 0;
     }
 }
 
@@ -2970,8 +2987,12 @@ function createImpact(pos, normal) {
 }
 
 // --- Tracer pool ---
+// A tracer is a streak TRACER_LENGTH long whose tail starts at `start`. Its
+// head leads the tail, so the streak shortens as it arrives and never pokes
+// past `maxDist` (the surface the round struck).
+const TRACER_LENGTH = 8;
 const tracers   = [];
-const tracerGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -8)]);
+const tracerGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -TRACER_LENGTH)]);
 for (let i = 0; i < 100; i++) {
     const t = new THREE.Line(tracerGeo, new THREE.LineBasicMaterial({ color: 0xffcc88 }));
     t.visible = false;
@@ -2989,7 +3010,22 @@ function createTracer(start, dir, maxDist = 200) {
         t.mesh.visible = true;
         t.traveled = 0;
         t.maxDist   = maxDist;
+        setTracerLength(t);
     }
+}
+
+// Tracer from `start` that ends exactly at `end`.
+function createTracerTo(start, end) {
+    const dir  = end.clone().sub(start);
+    const dist = dir.length();
+    if (dist < 0.01) return;
+    createTracer(start, dir.divideScalar(dist), dist);
+}
+
+// Shortens the streak so its head stops at the tracer's end point.
+function setTracerLength(t) {
+    const remaining = t.maxDist - t.traveled;
+    t.mesh.scale.z = Math.max(0.001, Math.min(1, remaining / TRACER_LENGTH));
 }
 
 // --- Ash particle system ---
@@ -3027,6 +3063,8 @@ exports.explosions = explosions;
 
 exports.impacts = impacts;
 
+exports.TRACER_LENGTH = TRACER_LENGTH;
+
 exports.tracers = tracers;
 
 exports.ashCount = ashCount;
@@ -3042,6 +3080,10 @@ exports.createExplosion = createExplosion;
 exports.createImpact = createImpact;
 
 exports.createTracer = createTracer;
+
+exports.createTracerTo = createTracerTo;
+
+exports.setTracerLength = setTracerLength;
 });
 
 __define("js/input.js", (exports, __require) => {
@@ -3250,7 +3292,7 @@ const { initAudio, startAmbientBattle, playSoundFile, getAudioState } = __requir
 
 const { getTerrainHeight } = __require("js/world.js");
 
-const { flashes, explosions, impacts, tracers, ashParticles, ashCount, horizonLights } = __require("js/effects.js");
+const { flashes, explosions, impacts, tracers, ashParticles, ashCount, horizonLights, setTracerLength } = __require("js/effects.js");
 
 const { playerRoot, leanObject, pitchObject, playerAI } = __require("js/player.js");
 
@@ -3786,6 +3828,12 @@ function animate() {
         fpFlashLight.intensity  = Math.max(0, fpFlashLight.intensity - dt * 40);
     }
 
+    // Scene lights have no shadows, so light from a blast or flash on one
+    // layer would shine through the earth onto soldiers on the other. Lights
+    // on the layer the player can't see into are kept dark.
+    const seesSurface = !state.playerUnderground || state.playerInStairwell;
+    const seesTunnels = state.playerUnderground || state.playerInStairwell;
+
     // Explosion pool update
     explosions.forEach(exp => {
         if (exp.life > 0) {
@@ -3798,7 +3846,8 @@ function animate() {
             else if (t < 0.4)  exp.mesh.material.color.setHex(0xff8800);
             else               exp.mesh.material.color.setHex(0x330800);
             exp.mesh.material.opacity = (1.0 - t) * 0.9;
-            exp.light.intensity = Math.max(0, 20.0 * (1.0 - (t * 1.5)));
+            const lightVisible = exp.underground ? seesTunnels : seesSurface;
+            exp.light.intensity = lightVisible ? Math.max(0, 20.0 * (1.0 - (t * 1.5))) : 0;
             if (exp.life <= 0) {
                 exp.mesh.visible    = false;
                 exp.light.intensity = 0;
@@ -3840,6 +3889,7 @@ function animate() {
                 t.mesh.visible = false;
             } else {
                 t.mesh.position.add(t.dir.clone().multiplyScalar(moveDist));
+                setTracerLength(t);
             }
         }
     });
@@ -3854,9 +3904,12 @@ function animate() {
     }
     ashParticles.geometry.attributes.position.needsUpdate = true;
 
-    // Horizon lights decay
+    // Horizon lights decay (distant surface artillery, unseen from the tunnels)
     horizonLights.forEach(hl => {
-        if (hl.timer > 0) {
+        if (!seesSurface) {
+            hl.timer = 0;
+            hl.light.intensity = 0;
+        } else if (hl.timer > 0) {
             hl.timer -= dt;
             if (hl.timer <= 0) hl.light.intensity = 0;
         } else {
@@ -3988,15 +4041,15 @@ const { camera } = __require("js/scene.js");
 
 const { playSoundFile, playPositionalSound } = __require("js/audio.js");
 
-const { getOcclusionMeshes, canPerceive } = __require("js/tunnels.js");
+const { getBulletMeshes, canPerceive } = __require("js/tunnels.js");
 
 const { playerAI } = __require("js/player.js");
 
 const { weaponsData, weaponContainer, fpFlashMaterial, fpFlashLight, fpFlashGroup } = __require("js/weapons.js");
 
-const { raycaster } = __require("js/raycast.js");
+const { raycaster, createRicochet } = __require("js/raycast.js");
 
-const { createImpact, createTracer } = __require("js/effects.js");
+const { createImpact, createTracerTo } = __require("js/effects.js");
 
 const { pitchObject } = __require("js/player.js");
 
@@ -4071,7 +4124,7 @@ function shootPlayer() {
     const allAIMeshes = [...enemies, ...allies]
         .filter(s => s.mesh.visible && canPerceive(playerAI, s))
         .map(s => s.mesh);
-    const intersects  = raycaster.intersectObjects([...getOcclusionMeshes(playerAI), ...allAIMeshes], true);
+    const intersects  = raycaster.intersectObjects([...getBulletMeshes(), ...allAIMeshes], true);
 
     let hitDistance = 200;
     if (intersects.length > 0) {
@@ -4098,7 +4151,7 @@ function shootPlayer() {
                 reflection.y += Math.random() * 0.4;
                 reflection.z += (Math.random() - 0.5) * 0.3;
                 reflection.normalize();
-                createTracer(hit.point, reflection, 60);
+                createRicochet(hit.point, normal, reflection);
                 if (camera.getWorldPosition(new THREE.Vector3()).distanceToSquared(hit.point) < 64.0) {
                     playSoundFile('whiz', 1.5 + Math.random() * 0.5, 0.2);
                 }
@@ -4106,7 +4159,8 @@ function shootPlayer() {
         }
     }
 
-    if (Math.random() < 0.25) createTracer(barrelPos, camDir, hitDistance);
+    // The round flies from the camera; draw its tracer from the muzzle to where it landed.
+    if (Math.random() < 0.25) createTracerTo(barrelPos, raycaster.ray.at(hitDistance, new THREE.Vector3()));
 
     const bulletRay  = new THREE.Ray(barrelPos, camDir);
     let closestPt    = new THREE.Vector3();
@@ -4145,12 +4199,35 @@ const { camera } = __require("js/scene.js");
 
 const { worldMeshes } = __require("js/world.js");
 
+const { getBulletMeshes } = __require("js/tunnels.js");
+
+const { createTracer } = __require("js/effects.js");
+
 // ================================================================
 // RAYCASTER UTILITIES
 // ================================================================
 
 
+
+
 const raycaster = new THREE.Raycaster();
+const bulletRaycaster  = new THREE.Raycaster();
+
+// Distance a round travels from `origin` along `dir` before striking any
+// solid surface on either layer, capped at `maxDist`.
+function getBulletTravel(origin, dir, maxDist) {
+    bulletRaycaster.set(origin, dir);
+    bulletRaycaster.far = maxDist;
+    const hits = bulletRaycaster.intersectObjects(getBulletMeshes(), false);
+    return hits.length > 0 ? hits[0].distance : maxDist;
+}
+
+// Ricochet streak leaving a surface at `point`; it stops at the next wall,
+// floor or ceiling instead of flying on through the ground.
+function createRicochet(point, normal, dir, maxDist = 60) {
+    const start = point.clone().add(normal.clone().multiplyScalar(0.03));
+    createTracer(start, dir, getBulletTravel(start, dir, maxDist));
+}
 
 // Returns true if a world-space spot is visible from the player's camera
 function isSpotVisibleToPlayer(spot) {
@@ -4166,6 +4243,8 @@ function isSpotVisibleToPlayer(spot) {
 }
 
 exports.raycaster = raycaster;
+
+exports.createRicochet = createRicochet;
 
 exports.isSpotVisibleToPlayer = isSpotVisibleToPlayer;
 });
@@ -4184,6 +4263,8 @@ scene.background = new THREE.Color(FOG_COLOR);
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.01, 1000);
 const renderer = new THREE.WebGLRenderer({ antialias: false });
 renderer.setSize(window.innerWidth, window.innerHeight);
+// Explosion fireballs are clipped to their own layer (surface or tunnel).
+renderer.localClippingEnabled = true;
 document.body.appendChild(renderer.domElement);
 
 exports.scene = scene;
@@ -4624,8 +4705,8 @@ function buildObstacle(o) {
     } else {
         // Overturned mine cart on its side.
         addBox(o.minX, o.maxX, y0 + 0.15, y1, o.minZ, o.maxZ, cartMat, lists);
-        addBox(o.minX + 0.1, o.minX + 0.3, y0, y0 + 0.3, o.minZ - 0.05, o.maxZ + 0.05, darkMat);
-        addBox(o.maxX - 0.3, o.maxX - 0.1, y0, y0 + 0.3, o.minZ - 0.05, o.maxZ + 0.05, darkMat);
+        addBox(o.minX + 0.1, o.minX + 0.3, y0, y0 + 0.3, o.minZ - 0.05, o.maxZ + 0.05, darkMat, lists);
+        addBox(o.maxX - 0.3, o.maxX - 0.1, y0, y0 + 0.3, o.minZ - 0.05, o.maxZ + 0.05, darkMat, lists);
     }
     tunnelObstacles.push({ minX: o.minX, maxX: o.maxX, minZ: o.minZ, maxZ: o.maxZ });
 }
@@ -4664,7 +4745,7 @@ function buildStairwell(stair) {
     addBox(roofMinX, roofMaxX, BUNKER_ROOF_Y, BUNKER_ROOF_Y + 0.2, wallMinZ, wallMaxZ, surfaceTimberMat, [worldMeshes]);
     addBox(roofMinX + 0.3, roofMaxX - 0.3, BUNKER_ROOF_Y + 0.2, BUNKER_ROOF_Y + 0.5,
            wallMinZ + 0.15, wallMaxZ - 0.15, surfaceSandbagMat, [worldMeshes]);
-    addBox(stair.topX - 0.1, stair.topX + 0.1, BUNKER_ROOF_Y - 0.25, BUNKER_ROOF_Y, wallMinZ, wallMaxZ, surfaceTimberMat);
+    addBox(stair.topX - 0.1, stair.topX + 0.1, BUNKER_ROOF_Y - 0.25, BUNKER_ROOF_Y, wallMinZ, wallMaxZ, surfaceTimberMat, both);
     addLantern((stair.topX + stair.bottomX) / 2, TRENCH_FLOOR_Y - 0.4, stair.innerZ + zSign * 0.2);
     // Daylight spilling down the stairs from the entrance.
     bakeLights.push({ x: stair.topX - dir * 0.5, y: TRENCH_FLOOR_Y + 0.8, z: stair.centerZ, ...DAYLIGHT_LIGHT });
@@ -4706,12 +4787,13 @@ function buildTunnel(tunnel) {
     wallAlongZ(chamber.minX, -1, chamber.minZ, chamber.maxZ, [], WALL_BOTTOM_Y, TUNNEL_ROOF_Y, lists);
     wallAlongZ(chamber.maxX,  1, chamber.minZ, chamber.maxZ, [], WALL_BOTTOM_Y, TUNNEL_ROOF_Y, lists);
 
-    // Timber shoring frames along the gallery (visual only).
+    // Timber shoring frames along the gallery (they stop bullets but are too
+    // thin to need movement collision).
     for (let z = gallery.minZ + 2; z < gallery.maxZ - 1; z += 3.5) {
         if (Math.abs(z) < chamber.maxZ + 0.5) continue;
-        addBox(gallery.minX, gallery.minX + 0.15, TUNNEL_FLOOR_Y, TUNNEL_CEILING_Y, z - 0.08, z + 0.08, timberMat);
-        addBox(gallery.maxX - 0.15, gallery.maxX, TUNNEL_FLOOR_Y, TUNNEL_CEILING_Y, z - 0.08, z + 0.08, timberMat);
-        addBox(gallery.minX, gallery.maxX, TUNNEL_CEILING_Y - 0.15, TUNNEL_CEILING_Y, z - 0.08, z + 0.08, timberMat);
+        addBox(gallery.minX, gallery.minX + 0.15, TUNNEL_FLOOR_Y, TUNNEL_CEILING_Y, z - 0.08, z + 0.08, timberMat, lists);
+        addBox(gallery.maxX - 0.15, gallery.maxX, TUNNEL_FLOOR_Y, TUNNEL_CEILING_Y, z - 0.08, z + 0.08, timberMat, lists);
+        addBox(gallery.minX, gallery.maxX, TUNNEL_CEILING_Y - 0.15, TUNNEL_CEILING_Y, z - 0.08, z + 0.08, timberMat, lists);
     }
 
     // Cover for the underground firefights.
@@ -4806,16 +4888,29 @@ function canPerceive(a, b) {
 let allMeshes = [];
 let allMeshesKey = -1;
 
-// Geometry that can block a line between `a` and `b` (b may be null).
-function getOcclusionMeshes(a, b = null) {
-    const stairwell = isInStairwell(a) || (b && isInStairwell(b));
-    if (!stairwell) return isUnderground(a) ? tunnelMeshes : worldMeshes;
+// Geometry on both layers. The galleries lie wholly below the surface, so a
+// ray from one layer only reaches the other's geometry through a stairwell.
+// Bullets, shells and ricochets test against this so they always stop at
+// the first solid surface, whichever layer it belongs to.
+function getBulletMeshes() {
     const key = worldMeshes.length * 100000 + tunnelMeshes.length;
     if (key !== allMeshesKey) {
         allMeshes = [...new Set([...worldMeshes, ...tunnelMeshes])];
         allMeshesKey = key;
     }
     return allMeshes;
+}
+
+// Geometry that can block a line between `a` and `b` (b may be null).
+function getOcclusionMeshes(a, b = null) {
+    const stairwell = isInStairwell(a) || (b && isInStairwell(b));
+    if (!stairwell) return isUnderground(a) ? tunnelMeshes : worldMeshes;
+    return getBulletMeshes();
+}
+
+// True for a world-space point in the tunnel layer (below the trench floor).
+function isUndergroundPoint(p) {
+    return p.y < TRENCH_FLOOR_Y - 0.5;
 }
 
 TUNNELS.forEach(buildTunnel);
@@ -4835,7 +4930,11 @@ exports.isInStairwell = isInStairwell;
 
 exports.canPerceive = canPerceive;
 
+exports.getBulletMeshes = getBulletMeshes;
+
 exports.getOcclusionMeshes = getOcclusionMeshes;
+
+exports.isUndergroundPoint = isUndergroundPoint;
 });
 
 __define("js/turrets.js", (exports, __require) => {
@@ -5076,11 +5175,7 @@ const { camera } = __require("js/scene.js");
 
 const { playPositionalSound, playNearMissSound, triggerShellShock } = __require("js/audio.js");
 
-const { worldMeshes } = __require("js/world.js");
-
-const { isUnderground, isInStairwell, canPerceive } = __require("js/tunnels.js");
-
-const { TRENCH_FLOOR_Y } = __require("js/tunnelLayout.js");
+const { isUnderground, isInStairwell, canPerceive, getBulletMeshes, isUndergroundPoint } = __require("js/tunnels.js");
 
 const { playerRoot, playerAI } = __require("js/player.js");
 
@@ -5099,7 +5194,31 @@ const { showMuzzleFlash, createExplosion, createImpact, createTracer } = __requi
 
 
 
+const blastRaycaster = new THREE.Raycaster();
 
+// True if the blast can reach a soldier at `pos`. The earth between the
+// surface and the galleries absorbs a blast on the other layer entirely; a
+// soldier in a dugout stairwell is only caught if nothing solid stands between
+// them and the burst.
+function isExposedToBlast(t, pos, blastOrigin, blastUnderground) {
+    const inStairwell = isInStairwell(t);
+    if (!inStairwell) return isUnderground(t) === blastUnderground;
+    const toTarget = pos.clone().sub(blastOrigin);
+    const dist = toTarget.length();
+    if (dist < 0.01) return true;
+    blastRaycaster.set(blastOrigin, toTarget.divideScalar(dist));
+    blastRaycaster.far = dist;
+    return blastRaycaster.intersectObjects(getBulletMeshes(), false).length === 0;
+}
+
+function getBodyCenter(t) {
+    const posOffset = t.isPlayer
+        ? ((state.isProne || state.slideTimer > 0) ? 0.15 : (state.isCrouched ? 0.4 : 1.0))
+        : (1.0 - (t.crouchT * 0.45));
+    const pos = t.isPlayer ? playerRoot.position.clone() : t.mesh.position.clone();
+    pos.y += posOffset;
+    return pos;
+}
 
 function shootTurret(turret, shooter) {
     if (turret.isReloading || turret.ammo <= 0) return;
@@ -5130,7 +5249,7 @@ function shootTurret(turret, shooter) {
 
     raycaster.set(barrelPos, dir);
     const allAIMeshes = [...enemies.map(e => e.mesh), ...allies.map(a => a.mesh), playerAI.mesh];
-    const intersects  = raycaster.intersectObjects([...worldMeshes, ...allAIMeshes], true);
+    const intersects  = raycaster.intersectObjects([...getBulletMeshes(), ...allAIMeshes], true);
 
     let hitDistance = 200;
     if (intersects.length > 0) {
@@ -5148,7 +5267,10 @@ function shootTurret(turret, shooter) {
             createImpact(hit.point.clone().add(debrisOffset), normal);
         }
 
-        createExplosion(hit.point);
+        const blastUnderground = isUndergroundPoint(hit.point);
+        // Lifted off the struck surface so exposure rays don't start inside it.
+        const blastOrigin = hit.point.clone().addScaledVector(normal, 0.1);
+        createExplosion(hit.point, blastUnderground);
         playPositionalSound(hit.point, 'artillery');
 
         const distToPlayer = camera.getWorldPosition(new THREE.Vector3()).distanceTo(hit.point);
@@ -5158,17 +5280,12 @@ function shootTurret(turret, shooter) {
         }
 
         // AoE damage (earth absorbs the blast between the surface and tunnels)
-        const blastUnderground = hit.point.y < TRENCH_FLOOR_Y - 0.5;
         const hitPool = [...allies, ...enemies, playerAI];
         hitPool.forEach(t => {
-            if (!t.dead && (isUnderground(t) === blastUnderground || isInStairwell(t))) {
-                const posOffset = t.isPlayer
-                    ? ((state.isProne || state.slideTimer > 0) ? 0.15 : (state.isCrouched ? 0.4 : 1.0))
-                    : (1.0 - (t.crouchT * 0.45));
-                const pos = t.isPlayer ? playerRoot.position.clone() : t.mesh.position.clone();
-                pos.y += posOffset;
+            if (!t.dead) {
+                const pos = getBodyCenter(t);
                 const distToBlast = pos.distanceTo(hit.point);
-                if (distToBlast < TURRET_EXPLOSION_RADIUS) {
+                if (distToBlast < TURRET_EXPLOSION_RADIUS && isExposedToBlast(t, pos, blastOrigin, blastUnderground)) {
                     let damageScale = 1.0 - ((distToBlast / TURRET_EXPLOSION_RADIUS) * 0.85);
                     damageScale = Math.max(0.2, damageScale);
                     let damage = TURRET_EXPLOSION_DAMAGE * damageScale;
@@ -5187,7 +5304,8 @@ function shootTurret(turret, shooter) {
             }
         });
 
-        if (camera.getWorldPosition(new THREE.Vector3()).distanceTo(hit.point) < 8.0) {
+        if (!playerAI.dead && camera.getWorldPosition(new THREE.Vector3()).distanceTo(hit.point) < 8.0 &&
+            isExposedToBlast(playerAI, getBodyCenter(playerAI), blastOrigin, blastUnderground)) {
             triggerShellShock(1.5);
         }
     }
@@ -5200,11 +5318,7 @@ function shootTurret(turret, shooter) {
     let closestPt   = new THREE.Vector3();
     hitPool.forEach(t => {
         if (!t.dead && (!shooter || canPerceive(shooter, t))) {
-            const posOffset = t.isPlayer
-                ? ((state.isProne || state.slideTimer > 0) ? 0.15 : (state.isCrouched ? 0.4 : 1.0))
-                : (1.0 - (t.crouchT * 0.45));
-            const pos = t.isPlayer ? playerRoot.position.clone() : t.mesh.position.clone();
-            pos.y += posOffset;
+            const pos = getBodyCenter(t);
             bulletRay.closestPointToPoint(pos, closestPt);
             const distAlongRay = barrelPos.distanceTo(closestPt);
             if (distAlongRay < hitDistance + 1.0) {

@@ -3,6 +3,7 @@
 // ================================================================
 
 import { scene } from './scene.js';
+import { TUNNEL_ROOF_Y } from './tunnelLayout.js';
 
 // --- Procedural muzzle flash texture ---
 const flashTexCanvas  = document.createElement('canvas');
@@ -50,28 +51,41 @@ export function showMuzzleFlash(pos, dir) {
 }
 
 // --- Explosion pool ---
+// The fireball grows to ~10 m across, far larger than the earth between the
+// surface and the tunnels, so each one is clipped to its own layer at the
+// top of the tunnel roof slab.
+const SURFACE_CLIP     = new THREE.Plane(new THREE.Vector3(0,  1, 0), -TUNNEL_ROOF_Y);  // keeps y >= roof
+const UNDERGROUND_CLIP = new THREE.Plane(new THREE.Vector3(0, -1, 0),  TUNNEL_ROOF_Y);  // keeps y <= roof
 export const explosions = [];
 const expGeo     = new THREE.SphereGeometry(1, 16, 16);
 const expMat     = new THREE.MeshBasicMaterial({ color: 0xffaa00, transparent: true, opacity: 1, depthWrite: false, blending: THREE.AdditiveBlending });
 for (let i = 0; i < 15; i++) {
-    const m = new THREE.Mesh(expGeo, expMat.clone());
+    const mat = expMat.clone();
+    mat.clippingPlanes = [SURFACE_CLIP];
+    const m = new THREE.Mesh(expGeo, mat);
     m.visible = false;
     const l = new THREE.PointLight(0xff6600, 0, 40);
     scene.add(m);
     scene.add(l);
-    explosions.push({ mesh: m, light: l, life: 0, maxLife: 0.5 });
+    explosions.push({ mesh: m, light: l, life: 0, maxLife: 0.5, underground: false });
 }
 
-export function createExplosion(pos) {
+export function createExplosion(pos, underground = false) {
     const exp = explosions.find(e => e.life <= 0);
     if (exp) {
         exp.life = exp.maxLife;
+        exp.underground = underground;
+        // Same plane count as before, so swapping it needs no shader rebuild.
+        exp.mesh.material.clippingPlanes[0] = underground ? UNDERGROUND_CLIP : SURFACE_CLIP;
         exp.mesh.position.copy(pos);
         exp.light.position.copy(pos);
         exp.visible = true;
         exp.mesh.visible = true;
+        exp.mesh.scale.setScalar(0.5);
+        exp.mesh.material.color.setHex(0xffffff);
         exp.mesh.material.opacity = 1;
-        exp.light.intensity = 20.0;
+        // Lit by the explosion update, which knows which layer the player sees.
+        exp.light.intensity = 0;
     }
 }
 
@@ -99,8 +113,12 @@ export function createImpact(pos, normal) {
 }
 
 // --- Tracer pool ---
+// A tracer is a streak TRACER_LENGTH long whose tail starts at `start`. Its
+// head leads the tail, so the streak shortens as it arrives and never pokes
+// past `maxDist` (the surface the round struck).
+export const TRACER_LENGTH = 8;
 export const tracers   = [];
-const tracerGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -8)]);
+const tracerGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -TRACER_LENGTH)]);
 for (let i = 0; i < 100; i++) {
     const t = new THREE.Line(tracerGeo, new THREE.LineBasicMaterial({ color: 0xffcc88 }));
     t.visible = false;
@@ -118,7 +136,22 @@ export function createTracer(start, dir, maxDist = 200) {
         t.mesh.visible = true;
         t.traveled = 0;
         t.maxDist   = maxDist;
+        setTracerLength(t);
     }
+}
+
+// Tracer from `start` that ends exactly at `end`.
+export function createTracerTo(start, end) {
+    const dir  = end.clone().sub(start);
+    const dist = dir.length();
+    if (dist < 0.01) return;
+    createTracer(start, dir.divideScalar(dist), dist);
+}
+
+// Shortens the streak so its head stops at the tracer's end point.
+export function setTracerLength(t) {
+    const remaining = t.maxDist - t.traveled;
+    t.mesh.scale.z = Math.max(0.001, Math.min(1, remaining / TRACER_LENGTH));
 }
 
 // --- Ash particle system ---

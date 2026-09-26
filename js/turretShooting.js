@@ -7,12 +7,36 @@ import { TURRET_PLAYER_FIRE_COOLDOWN, TURRET_AI_FIRE_COOLDOWN,
 import { state, allies, enemies } from './state.js';
 import { camera } from './scene.js';
 import { playPositionalSound, playNearMissSound, triggerShellShock } from './audio.js';
-import { worldMeshes } from './world.js';
-import { isUnderground, isInStairwell, canPerceive } from './tunnels.js';
-import { TRENCH_FLOOR_Y } from './tunnelLayout.js';
+import { isUnderground, isInStairwell, canPerceive, getBulletMeshes, isUndergroundPoint } from './tunnels.js';
 import { playerRoot, playerAI } from './player.js';
 import { raycaster } from './raycast.js';
 import { showMuzzleFlash, createExplosion, createImpact, createTracer } from './effects.js';
+
+const blastRaycaster = new THREE.Raycaster();
+
+// True if the blast can reach a soldier at `pos`. The earth between the
+// surface and the galleries absorbs a blast on the other layer entirely; a
+// soldier in a dugout stairwell is only caught if nothing solid stands between
+// them and the burst.
+function isExposedToBlast(t, pos, blastOrigin, blastUnderground) {
+    const inStairwell = isInStairwell(t);
+    if (!inStairwell) return isUnderground(t) === blastUnderground;
+    const toTarget = pos.clone().sub(blastOrigin);
+    const dist = toTarget.length();
+    if (dist < 0.01) return true;
+    blastRaycaster.set(blastOrigin, toTarget.divideScalar(dist));
+    blastRaycaster.far = dist;
+    return blastRaycaster.intersectObjects(getBulletMeshes(), false).length === 0;
+}
+
+function getBodyCenter(t) {
+    const posOffset = t.isPlayer
+        ? ((state.isProne || state.slideTimer > 0) ? 0.15 : (state.isCrouched ? 0.4 : 1.0))
+        : (1.0 - (t.crouchT * 0.45));
+    const pos = t.isPlayer ? playerRoot.position.clone() : t.mesh.position.clone();
+    pos.y += posOffset;
+    return pos;
+}
 
 export function shootTurret(turret, shooter) {
     if (turret.isReloading || turret.ammo <= 0) return;
@@ -43,7 +67,7 @@ export function shootTurret(turret, shooter) {
 
     raycaster.set(barrelPos, dir);
     const allAIMeshes = [...enemies.map(e => e.mesh), ...allies.map(a => a.mesh), playerAI.mesh];
-    const intersects  = raycaster.intersectObjects([...worldMeshes, ...allAIMeshes], true);
+    const intersects  = raycaster.intersectObjects([...getBulletMeshes(), ...allAIMeshes], true);
 
     let hitDistance = 200;
     if (intersects.length > 0) {
@@ -61,7 +85,10 @@ export function shootTurret(turret, shooter) {
             createImpact(hit.point.clone().add(debrisOffset), normal);
         }
 
-        createExplosion(hit.point);
+        const blastUnderground = isUndergroundPoint(hit.point);
+        // Lifted off the struck surface so exposure rays don't start inside it.
+        const blastOrigin = hit.point.clone().addScaledVector(normal, 0.1);
+        createExplosion(hit.point, blastUnderground);
         playPositionalSound(hit.point, 'artillery');
 
         const distToPlayer = camera.getWorldPosition(new THREE.Vector3()).distanceTo(hit.point);
@@ -71,17 +98,12 @@ export function shootTurret(turret, shooter) {
         }
 
         // AoE damage (earth absorbs the blast between the surface and tunnels)
-        const blastUnderground = hit.point.y < TRENCH_FLOOR_Y - 0.5;
         const hitPool = [...allies, ...enemies, playerAI];
         hitPool.forEach(t => {
-            if (!t.dead && (isUnderground(t) === blastUnderground || isInStairwell(t))) {
-                const posOffset = t.isPlayer
-                    ? ((state.isProne || state.slideTimer > 0) ? 0.15 : (state.isCrouched ? 0.4 : 1.0))
-                    : (1.0 - (t.crouchT * 0.45));
-                const pos = t.isPlayer ? playerRoot.position.clone() : t.mesh.position.clone();
-                pos.y += posOffset;
+            if (!t.dead) {
+                const pos = getBodyCenter(t);
                 const distToBlast = pos.distanceTo(hit.point);
-                if (distToBlast < TURRET_EXPLOSION_RADIUS) {
+                if (distToBlast < TURRET_EXPLOSION_RADIUS && isExposedToBlast(t, pos, blastOrigin, blastUnderground)) {
                     let damageScale = 1.0 - ((distToBlast / TURRET_EXPLOSION_RADIUS) * 0.85);
                     damageScale = Math.max(0.2, damageScale);
                     let damage = TURRET_EXPLOSION_DAMAGE * damageScale;
@@ -100,7 +122,8 @@ export function shootTurret(turret, shooter) {
             }
         });
 
-        if (camera.getWorldPosition(new THREE.Vector3()).distanceTo(hit.point) < 8.0) {
+        if (!playerAI.dead && camera.getWorldPosition(new THREE.Vector3()).distanceTo(hit.point) < 8.0 &&
+            isExposedToBlast(playerAI, getBodyCenter(playerAI), blastOrigin, blastUnderground)) {
             triggerShellShock(1.5);
         }
     }
@@ -113,11 +136,7 @@ export function shootTurret(turret, shooter) {
     let closestPt   = new THREE.Vector3();
     hitPool.forEach(t => {
         if (!t.dead && (!shooter || canPerceive(shooter, t))) {
-            const posOffset = t.isPlayer
-                ? ((state.isProne || state.slideTimer > 0) ? 0.15 : (state.isCrouched ? 0.4 : 1.0))
-                : (1.0 - (t.crouchT * 0.45));
-            const pos = t.isPlayer ? playerRoot.position.clone() : t.mesh.position.clone();
-            pos.y += posOffset;
+            const pos = getBodyCenter(t);
             bulletRay.closestPointToPoint(pos, closestPt);
             const distAlongRay = barrelPos.distanceTo(closestPt);
             if (distAlongRay < hitDistance + 1.0) {

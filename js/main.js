@@ -13,7 +13,7 @@ import { scene, camera, renderer } from './scene.js';
 import { initAudio, startAmbientBattle, playSoundFile, getAudioState } from './audio.js';
 import { getTerrainHeight } from './world.js';
 import './turrets.js';  // side-effect: builds turrets and covers
-import { flashes, explosions, impacts, tracers, ashParticles, ashCount, horizonLights } from './effects.js';
+import { flashes, explosions, impacts, tracers, ashParticles, ashCount, horizonLights, setTracerLength } from './effects.js';
 import { playerRoot, leanObject, pitchObject, playerAI } from './player.js';
 import { weaponsData, weaponContainer, modelSniper, fpFlashMaterial, fpFlashLight, snBoltGroup } from './weapons.js';
 import './input.js';  // side-effect: registers event handlers
@@ -532,6 +532,12 @@ function animate() {
         fpFlashLight.intensity  = Math.max(0, fpFlashLight.intensity - dt * 40);
     }
 
+    // Scene lights have no shadows, so light from a blast or flash on one
+    // layer would shine through the earth onto soldiers on the other. Lights
+    // on the layer the player can't see into are kept dark.
+    const seesSurface = !state.playerUnderground || state.playerInStairwell;
+    const seesTunnels = state.playerUnderground || state.playerInStairwell;
+
     // Explosion pool update
     explosions.forEach(exp => {
         if (exp.life > 0) {
@@ -544,7 +550,8 @@ function animate() {
             else if (t < 0.4)  exp.mesh.material.color.setHex(0xff8800);
             else               exp.mesh.material.color.setHex(0x330800);
             exp.mesh.material.opacity = (1.0 - t) * 0.9;
-            exp.light.intensity = Math.max(0, 20.0 * (1.0 - (t * 1.5)));
+            const lightVisible = exp.underground ? seesTunnels : seesSurface;
+            exp.light.intensity = lightVisible ? Math.max(0, 20.0 * (1.0 - (t * 1.5))) : 0;
             if (exp.life <= 0) {
                 exp.mesh.visible    = false;
                 exp.light.intensity = 0;
@@ -586,6 +593,7 @@ function animate() {
                 t.mesh.visible = false;
             } else {
                 t.mesh.position.add(t.dir.clone().multiplyScalar(moveDist));
+                setTracerLength(t);
             }
         }
     });
@@ -600,9 +608,12 @@ function animate() {
     }
     ashParticles.geometry.attributes.position.needsUpdate = true;
 
-    // Horizon lights decay
+    // Horizon lights decay (distant surface artillery, unseen from the tunnels)
     horizonLights.forEach(hl => {
-        if (hl.timer > 0) {
+        if (!seesSurface) {
+            hl.timer = 0;
+            hl.light.intensity = 0;
+        } else if (hl.timer > 0) {
             hl.timer -= dt;
             if (hl.timer <= 0) hl.light.intensity = 0;
         } else {

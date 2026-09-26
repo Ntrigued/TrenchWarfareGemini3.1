@@ -19,11 +19,11 @@ import { getTerrainHeight,
          allyCoversFront, allyCoversBack, enemyCoversFront, enemyCoversBack,
          allyPathCovers, enemyPathCovers, midCoversAlly, midCoversEnemy } from './world.js';
 import { playerRoot, playerAI } from './player.js';
-import { raycaster } from './raycast.js';
+import { raycaster, createRicochet } from './raycast.js';
 import { isSpotVisibleToPlayer } from './raycast.js';
-import { showMuzzleFlash, createImpact, createTracer } from './effects.js';
+import { showMuzzleFlash, createImpact, createTracerTo } from './effects.js';
 import { shootTurret } from './turretShooting.js';
-import { resolveMovement, updateLayer, getGroundHeight, canPerceive, getOcclusionMeshes } from './tunnels.js';
+import { resolveMovement, updateLayer, getGroundHeight, canPerceive, getOcclusionMeshes, getBulletMeshes } from './tunnels.js';
 import { TUNNELS, STAIR_TOP_X, STAIR_BOTTOM_X, CHAMBER_HALF_Z, TRENCH_WALKWAY_Z } from './tunnelLayout.js';
 
 // --- AI materials ---
@@ -2095,7 +2095,7 @@ export class AI {
         for (const soldier of [...allies, ...enemies]) {
             if (soldier !== this && soldier.mesh.visible && canPerceive(this, soldier)) hitTargets.push(soldier.mesh);
         }
-        const intersects = raycaster.intersectObjects([...getOcclusionMeshes(this), ...hitTargets], true);
+        const intersects = raycaster.intersectObjects([...getBulletMeshes(), ...hitTargets], true);
 
         let hitDistance = 200;
         if (intersects.length > 0) {
@@ -2120,7 +2120,7 @@ export class AI {
                     reflection.y += Math.random() * 0.4;
                     reflection.z += (Math.random() - 0.5) * 0.3;
                     reflection.normalize();
-                    createTracer(hit.point, reflection, 60);
+                    createRicochet(hit.point, normal, reflection);
                     if (camera.getWorldPosition(new THREE.Vector3()).distanceToSquared(hit.point) < 64.0) {
                         playSoundFile('whiz', 1.5 + Math.random() * 0.5, 0.2);
                     }
@@ -2128,7 +2128,8 @@ export class AI {
             }
         }
 
-        if (Math.random() < 0.25) createTracer(visualStart, dir, hitDistance);
+        // The round flies from the eye; draw its tracer from the muzzle to where it landed.
+        if (Math.random() < 0.25) createTracerTo(visualStart, eyeStart.clone().addScaledVector(dir, hitDistance));
 
         const bulletRay = new THREE.Ray(eyeStart, dir);
         const hitPool   = [...allies, ...enemies, playerAI];

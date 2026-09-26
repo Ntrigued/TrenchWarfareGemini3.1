@@ -6,11 +6,11 @@ import { MG_HEAT_PER_SHOT, MG_OVERHEAT_CAP } from './config.js';
 import { state, allies, enemies } from './state.js';
 import { camera } from './scene.js';
 import { playSoundFile, playPositionalSound } from './audio.js';
-import { getOcclusionMeshes, canPerceive } from './tunnels.js';
+import { getBulletMeshes, canPerceive } from './tunnels.js';
 import { playerAI } from './player.js';
 import { weaponsData, weaponContainer, fpFlashMaterial, fpFlashLight, fpFlashGroup } from './weapons.js';
-import { raycaster } from './raycast.js';
-import { createImpact, createTracer } from './effects.js';
+import { raycaster, createRicochet } from './raycast.js';
+import { createImpact, createTracerTo } from './effects.js';
 import { pitchObject } from './player.js';
 import { playerRoot } from './player.js';
 
@@ -69,7 +69,7 @@ export function shootPlayer() {
     const allAIMeshes = [...enemies, ...allies]
         .filter(s => s.mesh.visible && canPerceive(playerAI, s))
         .map(s => s.mesh);
-    const intersects  = raycaster.intersectObjects([...getOcclusionMeshes(playerAI), ...allAIMeshes], true);
+    const intersects  = raycaster.intersectObjects([...getBulletMeshes(), ...allAIMeshes], true);
 
     let hitDistance = 200;
     if (intersects.length > 0) {
@@ -96,7 +96,7 @@ export function shootPlayer() {
                 reflection.y += Math.random() * 0.4;
                 reflection.z += (Math.random() - 0.5) * 0.3;
                 reflection.normalize();
-                createTracer(hit.point, reflection, 60);
+                createRicochet(hit.point, normal, reflection);
                 if (camera.getWorldPosition(new THREE.Vector3()).distanceToSquared(hit.point) < 64.0) {
                     playSoundFile('whiz', 1.5 + Math.random() * 0.5, 0.2);
                 }
@@ -104,7 +104,8 @@ export function shootPlayer() {
         }
     }
 
-    if (Math.random() < 0.25) createTracer(barrelPos, camDir, hitDistance);
+    // The round flies from the camera; draw its tracer from the muzzle to where it landed.
+    if (Math.random() < 0.25) createTracerTo(barrelPos, raycaster.ray.at(hitDistance, new THREE.Vector3()));
 
     const bulletRay  = new THREE.Ray(barrelPos, camDir);
     let closestPt    = new THREE.Vector3();

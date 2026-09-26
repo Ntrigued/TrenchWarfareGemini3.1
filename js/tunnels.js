@@ -158,8 +158,8 @@ function buildObstacle(o) {
     } else {
         // Overturned mine cart on its side.
         addBox(o.minX, o.maxX, y0 + 0.15, y1, o.minZ, o.maxZ, cartMat, lists);
-        addBox(o.minX + 0.1, o.minX + 0.3, y0, y0 + 0.3, o.minZ - 0.05, o.maxZ + 0.05, darkMat);
-        addBox(o.maxX - 0.3, o.maxX - 0.1, y0, y0 + 0.3, o.minZ - 0.05, o.maxZ + 0.05, darkMat);
+        addBox(o.minX + 0.1, o.minX + 0.3, y0, y0 + 0.3, o.minZ - 0.05, o.maxZ + 0.05, darkMat, lists);
+        addBox(o.maxX - 0.3, o.maxX - 0.1, y0, y0 + 0.3, o.minZ - 0.05, o.maxZ + 0.05, darkMat, lists);
     }
     tunnelObstacles.push({ minX: o.minX, maxX: o.maxX, minZ: o.minZ, maxZ: o.maxZ });
 }
@@ -198,7 +198,7 @@ function buildStairwell(stair) {
     addBox(roofMinX, roofMaxX, BUNKER_ROOF_Y, BUNKER_ROOF_Y + 0.2, wallMinZ, wallMaxZ, surfaceTimberMat, [worldMeshes]);
     addBox(roofMinX + 0.3, roofMaxX - 0.3, BUNKER_ROOF_Y + 0.2, BUNKER_ROOF_Y + 0.5,
            wallMinZ + 0.15, wallMaxZ - 0.15, surfaceSandbagMat, [worldMeshes]);
-    addBox(stair.topX - 0.1, stair.topX + 0.1, BUNKER_ROOF_Y - 0.25, BUNKER_ROOF_Y, wallMinZ, wallMaxZ, surfaceTimberMat);
+    addBox(stair.topX - 0.1, stair.topX + 0.1, BUNKER_ROOF_Y - 0.25, BUNKER_ROOF_Y, wallMinZ, wallMaxZ, surfaceTimberMat, both);
     addLantern((stair.topX + stair.bottomX) / 2, TRENCH_FLOOR_Y - 0.4, stair.innerZ + zSign * 0.2);
     // Daylight spilling down the stairs from the entrance.
     bakeLights.push({ x: stair.topX - dir * 0.5, y: TRENCH_FLOOR_Y + 0.8, z: stair.centerZ, ...DAYLIGHT_LIGHT });
@@ -240,12 +240,13 @@ function buildTunnel(tunnel) {
     wallAlongZ(chamber.minX, -1, chamber.minZ, chamber.maxZ, [], WALL_BOTTOM_Y, TUNNEL_ROOF_Y, lists);
     wallAlongZ(chamber.maxX,  1, chamber.minZ, chamber.maxZ, [], WALL_BOTTOM_Y, TUNNEL_ROOF_Y, lists);
 
-    // Timber shoring frames along the gallery (visual only).
+    // Timber shoring frames along the gallery (they stop bullets but are too
+    // thin to need movement collision).
     for (let z = gallery.minZ + 2; z < gallery.maxZ - 1; z += 3.5) {
         if (Math.abs(z) < chamber.maxZ + 0.5) continue;
-        addBox(gallery.minX, gallery.minX + 0.15, TUNNEL_FLOOR_Y, TUNNEL_CEILING_Y, z - 0.08, z + 0.08, timberMat);
-        addBox(gallery.maxX - 0.15, gallery.maxX, TUNNEL_FLOOR_Y, TUNNEL_CEILING_Y, z - 0.08, z + 0.08, timberMat);
-        addBox(gallery.minX, gallery.maxX, TUNNEL_CEILING_Y - 0.15, TUNNEL_CEILING_Y, z - 0.08, z + 0.08, timberMat);
+        addBox(gallery.minX, gallery.minX + 0.15, TUNNEL_FLOOR_Y, TUNNEL_CEILING_Y, z - 0.08, z + 0.08, timberMat, lists);
+        addBox(gallery.maxX - 0.15, gallery.maxX, TUNNEL_FLOOR_Y, TUNNEL_CEILING_Y, z - 0.08, z + 0.08, timberMat, lists);
+        addBox(gallery.minX, gallery.maxX, TUNNEL_CEILING_Y - 0.15, TUNNEL_CEILING_Y, z - 0.08, z + 0.08, timberMat, lists);
     }
 
     // Cover for the underground firefights.
@@ -340,16 +341,29 @@ export function canPerceive(a, b) {
 let allMeshes = [];
 let allMeshesKey = -1;
 
-// Geometry that can block a line between `a` and `b` (b may be null).
-export function getOcclusionMeshes(a, b = null) {
-    const stairwell = isInStairwell(a) || (b && isInStairwell(b));
-    if (!stairwell) return isUnderground(a) ? tunnelMeshes : worldMeshes;
+// Geometry on both layers. The galleries lie wholly below the surface, so a
+// ray from one layer only reaches the other's geometry through a stairwell.
+// Bullets, shells and ricochets test against this so they always stop at
+// the first solid surface, whichever layer it belongs to.
+export function getBulletMeshes() {
     const key = worldMeshes.length * 100000 + tunnelMeshes.length;
     if (key !== allMeshesKey) {
         allMeshes = [...new Set([...worldMeshes, ...tunnelMeshes])];
         allMeshesKey = key;
     }
     return allMeshes;
+}
+
+// Geometry that can block a line between `a` and `b` (b may be null).
+export function getOcclusionMeshes(a, b = null) {
+    const stairwell = isInStairwell(a) || (b && isInStairwell(b));
+    if (!stairwell) return isUnderground(a) ? tunnelMeshes : worldMeshes;
+    return getBulletMeshes();
+}
+
+// True for a world-space point in the tunnel layer (below the trench floor).
+export function isUndergroundPoint(p) {
+    return p.y < TRENCH_FLOOR_Y - 0.5;
 }
 
 TUNNELS.forEach(buildTunnel);

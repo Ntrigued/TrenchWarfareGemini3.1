@@ -11,4 +11,6 @@ scene.background = new THREE.Color(FOG_COLOR);
 export const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.01, 1000);
 export const renderer = new THREE.WebGLRenderer({ antialias: false });
 renderer.setSize(window.innerWidth, window.innerHeight);
+// Explosion fireballs are clipped to their own layer (surface or tunnel).
+renderer.localClippingEnabled = true;
 document.body.appendChild(renderer.domElement);
